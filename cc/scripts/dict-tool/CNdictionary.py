@@ -646,10 +646,17 @@ HTML = r"""<!DOCTYPE html>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
+      position: relative;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
       background: #0f1117; color: #e2e8f0;
       min-height: 100vh; display: flex; flex-direction: column;
       align-items: center; padding: 48px 16px 80px;
+    }
+    body::before {
+      content: ""; position: fixed; inset: 0; z-index: -1;
+      background-image: var(--bg-img, none);
+      background-size: cover; background-position: center;
+      filter: blur(2px); opacity: .2;
     }
     h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: .04em; color: #f8fafc; margin-bottom: 6px; }
     .subtitle { font-size: .85rem; color: #64748b; margin-bottom: 36px; }
@@ -1143,6 +1150,9 @@ HTML = r"""<!DOCTYPE html>
       flush();
       return syls;
     }
+    // ── 每次開頁隨機背景圖 ───────────────────────────────────────────
+    document.documentElement.style.setProperty("--bg-img", `url(/egg/${1+Math.floor(Math.random()*10)})`);
+
     // ── 查詢完成小彩蛋：低機率跳出隨機圖 ─────────────────────────────
     const EGG_CAPTIONS=["查到啦～","辛苦了，休息一下","小獎勵，笑一個","咦，發現你了","繼續加油查詢"];
     let eggTimer=null;
