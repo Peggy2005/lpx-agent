@@ -542,6 +542,14 @@ def lookup(word, session):
     # 不要整列判「查無資料」
     if pos != "—" or level != "—":
         return [{"word": word, "pinyin": "—", "pos": pos, "definition": "—", "level": level}]
+    # 整詞兩個辭典都查無、詞性也抓不到：這種通常是「簽好」「的話」「拿給」
+    # 這類 ASBC 語料庫認得（斷詞沒切錯）、但辭典本身不收錄的文法組合詞
+    # （動詞＋補語、語助詞短語等），拆成單字個別查，比整詞掛「查無資料」有用。
+    if len(word) > 1:
+        results = []
+        for ch in word:
+            results.extend(lookup(ch, session))
+        return results
     return [{"word": word, "pinyin": "查無資料", "pos": "—", "definition": "—", "level": level}]
 
 def build_excel(results, output_path):
