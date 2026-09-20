@@ -29,7 +29,7 @@ if _missing:
 import re, json, time, threading, webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from flask import Flask, request, Response, render_template_string
+from flask import Flask, request, Response, render_template_string, send_from_directory
 import requests as req
 import urllib3
 from bs4 import BeautifulSoup
@@ -47,6 +47,8 @@ BASE = "https://dict.concised.moe.edu.tw"
 MOEDICT_URL = "https://www.moedict.tw/a/{word}.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Language": "zh-TW,zh;q=0.9"}
 VOCAB_XLSX = Path(__file__).parent / "vocab_14452.xlsx"
+EASTER_EGG_DIR = Path(__file__).parent / "easter_eggs"
+EASTER_EGG_COUNT = 10
 
 # 國教院《教材編輯輔助系統》斷詞（語料庫固定遠流語料，關聯詞數量固定 10）
 COCT_URL = "https://coct.naer.edu.tw/edit.jsp"
@@ -717,6 +719,16 @@ HTML = r"""<!DOCTYPE html>
     #btn-bpmf { background: #1a2a3a; color: #64748b; border: 1px solid #2d3548; font-size:.85rem; }
     #btn-bpmf.active { background: #1e3a5f; color: #7dd3fc; border-color: #2563eb; }
     #bpmf-hint { font-size:.82rem; color:#7dd3fc; margin-top:8px; min-height:18px; letter-spacing:.04em; }
+    #egg-popup {
+      position: fixed; right: 20px; bottom: 20px; width: 180px;
+      background: #1e2330; border: 1px solid #2d3548; border-radius: 12px;
+      overflow: hidden; box-shadow: 0 8px 28px rgba(0,0,0,.45);
+      opacity: 0; transform: translateY(12px) scale(.96); pointer-events: none;
+      transition: opacity .35s ease, transform .35s ease; z-index: 999; cursor: pointer;
+    }
+    #egg-popup.show { opacity: 1; transform: none; pointer-events: auto; }
+    #egg-popup img { display: block; width: 100%; height: 160px; object-fit: cover; }
+    #egg-popup .egg-caption { padding: 8px 10px; font-size: .78rem; color: #cbd5e1; text-align: center; }
   </style>
 </head>
 <body>
@@ -769,6 +781,7 @@ HTML = r"""<!DOCTYPE html>
       <tbody id="tbody"></tbody>
     </table>
   </div>
+  <div id="egg-popup"><img id="egg-img" alt=""><div class="egg-caption" id="egg-caption"></div></div>
   <script>
     // ── 大千式注音輸入支援 ──────────────────────────────────────────────
     const BPMF_KEYS={'1':'ㄅ','q':'ㄆ','a':'ㄇ','z':'ㄈ','2':'ㄉ','w':'ㄊ','s':'ㄋ','x':'ㄌ',
@@ -1130,6 +1143,25 @@ HTML = r"""<!DOCTYPE html>
       flush();
       return syls;
     }
+    // ── 查詢完成小彩蛋：低機率跳出隨機圖 ─────────────────────────────
+    const EGG_CAPTIONS=["查到啦～","辛苦了，休息一下","小獎勵，笑一個","咦，發現你了","繼續加油查詢"];
+    let eggTimer=null;
+    function maybeShowEasterEgg(){
+      if(Math.random()>0.08)return;  // 8% 機率
+      const popup=document.getElementById("egg-popup"),
+            img=document.getElementById("egg-img"),
+            caption=document.getElementById("egg-caption");
+      const n=1+Math.floor(Math.random()*10);
+      img.src=`/egg/${n}`;
+      caption.textContent=EGG_CAPTIONS[Math.floor(Math.random()*EGG_CAPTIONS.length)];
+      popup.classList.add("show");
+      clearTimeout(eggTimer);
+      eggTimer=setTimeout(()=>popup.classList.remove("show"),4000);
+    }
+    document.getElementById("egg-popup").addEventListener("click",()=>{
+      clearTimeout(eggTimer);
+      document.getElementById("egg-popup").classList.remove("show");
+    });
     function bpmfConvert(raw){
       // ASCII comma=ㄝ in 大千式; use full-width ，、 to separate search terms
       return raw.split(/([，、]+)/).map(part=>{
@@ -1223,6 +1255,7 @@ HTML = r"""<!DOCTYPE html>
               sortByLevelDesc();
               setLoading(false);setStatus(`完成，共 ${allResults.length} 筆（依單字級數降冪排序）`);
               if(allResults.length)btnExport.style.display="inline-block";
+              maybeShowEasterEgg();
               continue;
             }
             if(data.error){setStatus("錯誤："+data.error);setLoading(false);continue;}
@@ -1303,6 +1336,11 @@ HTML = r"""<!DOCTYPE html>
 @app.route("/")
 def index():
     return render_template_string(HTML.replace("__DEFAULT_OUTPUT__", str(DEFAULT_OUTPUT)))
+
+@app.route("/egg/<int:n>")
+def easter_egg(n):
+    """小彩蛋圖片，查詢完成時前端低機率隨機跳出一張。"""
+    return send_from_directory(EASTER_EGG_DIR, f"{n}.jpg")
 
 SEARCH_WORKERS = 10  # 併發查詢數：詞典查詢是網路 I/O，開多執行緒平行打才不會單詞逐一排隊
 
