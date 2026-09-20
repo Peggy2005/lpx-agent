@@ -29,7 +29,6 @@ if _missing:
 import re, json, time, threading, webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import quote as _urlquote
 from flask import Flask, request, Response, render_template_string
 import requests as req
 import urllib3
@@ -53,11 +52,20 @@ VOCAB_XLSX = Path(__file__).parent / "vocab_14452.xlsx"
 COCT_URL = "https://coct.naer.edu.tw/edit.jsp"
 COCT_CHUNK_SIZE = 1500  # 只當「整段完全沒有句號」時的保底切法，正常都用句號切
 
-# 中研院《現代漢語平衡語料庫》(ASBC) — 單字斷詞結果的前後字比對用
-# 這個 CGI 是 1990 年代的舊系統，頁面宣告 charset=big5，關鍵字參數也要用 Big5 編碼送出
-ASBC_URL = "https://lingcorpus.iis.sinica.edu.tw/cgi-bin/kiwi/mkiwi/kiwi.sh"
-ASBC_WORKERS = 5  # 舊系統穩定性差，併發別開太高
-_ASBC_UKEY_RE = re.compile(r"var ukey = (-?\d+)")
+# 斷詞校正用的辭典查詢併發數（萌典/簡編本都是正常現代系統，開多一點沒問題）
+DICT_CHECK_WORKERS = 8
+
+# 斷詞校正第一輪先跳過的字：動貌助詞、數詞、常見量詞。
+# 這些字大多是文法功能字或計量單位，跟前後字湊出來的「詞」多半不會是辭典收錄的
+# 詞條（如「一碗」「了一」），先跳過讓其他實詞優先配對，配不出新詞了才放回來一起試。
+_STOP_CHARS = set(
+    "了著過"                    # 動貌助詞
+    "一二三四五六七八九十"       # 數詞
+    "個次"                      # 使用者指定的量詞
+    "位隻張條件支枝把顆粒塊片本冊篇首幅幢棟間層座棵株朵束串"
+    "副對雙打組套輛艘架台部所盒箱包袋瓶罐杯碗盤碟勺匙口頭尾"
+    "匹群堆疊排行列圈段節截陣場回遍趟番度聲筆樁宗樣種類款項"
+)
 
 def _load_vocab_levels():
     mapping = {}
@@ -195,62 +203,17 @@ def _segment_chunk(text, session, retries=2):
     return []
 
 def segment_text(text, session):
-    """把一整段文字送去 COCT 斷詞，回傳去重複、去標點的詞語清單（依原文出現順序）。
-    多字詞查不到詞彙等級的（如人名），先驗證整詞是否為真實語料詞彙，
-    查無結果就拆回單字（見 _resolve_unleveled_words）；單字再用前後字比對
-    中研院語料庫，能組成真實詞彙就取代單字（見 _resolve_single_chars）。
+    """把一整段文字送去 COCT 斷詞，回傳去重複、去標點、經過斷詞校正的詞語清單。
+    校正邏輯見 _resolve_words_stream。
     （網頁版走 /segment 路由自己迭代 _split_sentences 以回報進度，這支給其他呼叫端用。）"""
     all_words = []
     for chunk in _split_sentences(text):
         all_words.extend(_segment_chunk(chunk, session))
     words = list(dict.fromkeys(all_words))
-    words = _resolve_unleveled_words(words, text, session)
-    return _resolve_single_chars(words, text, session)
-
-def _find_context_bigrams(word, source_text):
-    """在原文中找單字 word 第一次出現的位置，回傳「前字+word」「word+後字」
-    候選詞。前後鄰字必須是中文字才算數——標點、換行、空白、數字英文都不算，
-    等於那一側沒有鄰字可比對（例如字在文章開頭/結尾，或緊接著換行、標點）。"""
-    idx = source_text.find(word)
-    if idx == -1:
-        return []
-    candidates = []
-    if idx > 0 and not _NON_CHINESE_RE.match(source_text[idx - 1]):
-        candidates.append(source_text[idx - 1] + word)
-    if idx + 1 < len(source_text) and not _NON_CHINESE_RE.match(source_text[idx + 1]):
-        candidates.append(word + source_text[idx + 1])
-    return candidates
-
-def _asbc_get_ukey(session):
-    """跟 ASBC 要一組新的 session ukey。這是 1990 年代舊系統，ukey 效期很短，
-    共用同一組久了會撞到「連線逾時，重新開始」錯誤頁，所以每次查詢都重新要一組。"""
-    try:
-        r = session.get(f"{ASBC_URL}?qtype=0", timeout=10, verify=False)
-        m = _ASBC_UKEY_RE.search(r.content.decode("big5", errors="ignore"))
-        return m.group(1) if m else None
-    except Exception:
-        return None
-
-def _asbc_has_word(word, session):
-    """查中研院《現代漢語平衡語料庫》(ASBC)，確認 word 是否為語料庫斷詞後
-    真實存在過的詞彙單位（而不只是文章裡剛好相鄰的兩個字）。
-    這個舊 CGI 系統宣告 charset=big5，關鍵字要編碼成 Big5 送出。
-    注意：不能只用「沒有『找不到』」判斷有結果——ukey 逾時時會回一個
-    「連線逾時，重新開始」的錯誤頁，同樣沒有「找不到」三個字，會被誤判成查到。
-    真的查到結果的頁面才會出現「層計」字樣，用這個當唯一的正面判斷依據。"""
-    try:
-        ukey = _asbc_get_ukey(session)
-        if not ukey:
-            return False
-        kw = _urlquote(word.encode("big5", errors="ignore"))
-        if not kw:
-            return False
-        r = session.get(f"{ASBC_URL}?ukey={ukey}&qtype=2&lineLen=78&A=on&kw0={kw}",
-                        timeout=10, verify=False)
-        text = r.content.decode("big5", errors="ignore")
-        return "層計" in text
-    except Exception:
-        return False
+    for event in _resolve_words_stream(words, session):
+        if "__final__" in event:
+            return event["__final__"]
+    return words
 
 def _char_has_definition(word, session):
     """查 moedict 這個字本身有沒有實際定義。比完整的 lookup() 輕量（只打
@@ -265,77 +228,125 @@ def _char_has_definition(word, session):
     except Exception:
         return False
 
-def _resolve_unleveled_words(words, source_text, session):
-    """切出來的詞如果不只一個字，而且在本機詞彙等級表查不到等級
-    （VOCAB_LEVEL 沒有，例如人名「張愛玲」這種沒收錄的詞），
-    先整個詞拿去 ASBC 驗證是不是真實語料詞彙：
-    - 查得到：詞維持原樣，正常留著進辭典查表（等級欄還是會顯示「—」，
-      這只代表本機詞表沒收錄，不代表詞切錯，不用管）。
-    - 查不到：判定這詞很可能是斷詞切錯或罕見組合，拆成一個一個字，
-      這些字之後會併入 _resolve_single_chars 的前後字驗證流程。"""
-    unleveled = [w for w in dict.fromkeys(words) if len(w) > 1 and VOCAB_LEVEL.get(w, "—") == "—"]
-    if not unleveled:
-        return words
-    hit_set = set()
-    with ThreadPoolExecutor(max_workers=ASBC_WORKERS) as ex:
-        def check(w):
-            return w, _asbc_has_word(w, session)
-        for w, ok in ex.map(check, unleveled):
-            if ok:
-                hit_set.add(w)
-    out = []
+def _has_dict_entry(word, session):
+    """判斷 word 在萌典或教育部簡編本任一查得到詞條，用來決定斷詞校正時
+    一個多字詞/候選詞是否成立——只看「辭典收不收」，不管語料庫怎麼標。"""
+    if get_moedict_pos_groups(word, session):
+        return True
+    entries = lookup_concised(word, session)
+    return bool(entries) and entries[0].get("pinyin") != "錯誤"
+
+def _resolve_words_stream(words, session):
+    """斷詞校正（generator）：
+    ①掃過所有 2 字以上的詞，辭典（萌典＋簡編本，任一查到就算）查得到就保留，
+      查不到判定是斷詞切錯，拆成單字放回原本位置。
+    ②剩下的單字反覆做前後字配對：第一輪先跳過數詞/量詞/動貌助詞等停用字
+      （_STOP_CHARS），由左到右貪婪認領查得到的候選詞，避免同一個字被兩個
+      詞重複用掉；配不出新詞了才把停用字放回來一起再試一輪；直到某輪完全
+      配不出新詞為止，剩下的單字維持單字（交由呼叫端逐字查辭典）。
+    每次批次查詢後 yield 一個進度 dict；結束時 yield {"__final__": [...]}。"""
+    multi = [w for w in dict.fromkeys(words) if len(w) > 1]
+    hit = set()
+    if multi:
+        total = len(multi)
+        yield {"stage": "word_check", "done": 0, "total": total}
+        with ThreadPoolExecutor(max_workers=DICT_CHECK_WORKERS) as ex:
+            futures = {ex.submit(_has_dict_entry, w, session): w for w in multi}
+            done_n = 0
+            for fut in as_completed(futures):
+                w = futures[fut]
+                try:
+                    if fut.result():
+                        hit.add(w)
+                except Exception:
+                    pass
+                done_n += 1
+                yield {"stage": "word_check", "done": done_n, "total": total}
+
+    expanded = []
     for w in words:
-        if len(w) > 1 and VOCAB_LEVEL.get(w, "—") == "—" and w not in hit_set:
-            out.extend(list(w))
+        if len(w) > 1 and w not in hit:
+            expanded.extend(list(w))
         else:
-            out.append(w)
-    return list(dict.fromkeys(out))
+            expanded.append(w)
 
-def _resolve_single_chars(words, source_text, session):
-    """斷詞結果裡但凡是單字的，改抓原文中的前後鄰字組成候選詞，
-    拿去 ASBC 比對是否為真實語料詞彙；前、後兩側只要查到就用新詞取代單字
-    （兩側都查到就兩個新詞都留）。單字本身的去留：
-    - 查到新詞：原單字被新詞取代掉，不留。
-    - 兩側都查無新詞：不代表這個字沒意義（像「超」「給」這種字本身在
-      字典裡就查得到定義，只是剛好前後湊不出 ASBC 認得的詞），
-      改查 moedict 這個字本身有沒有實際定義——有就保留原字，
-      真的完全查無資料（罕見，通常是切錯的雜訊殘片）才整個刪掉。"""
-    singles = [w for w in words if len(w) == 1]
-    if not singles:
-        return words
-    candidates_by_word = {w: _find_context_bigrams(w, source_text) for w in singles}
-    all_candidates = sorted({c for cs in candidates_by_word.values() for c in cs})
-    hit_set = set()
-    if all_candidates:
-        with ThreadPoolExecutor(max_workers=ASBC_WORKERS) as ex:
-            def check(c):
-                return c, _asbc_has_word(c, session)
-            for c, ok in ex.map(check, all_candidates):
-                if ok:
-                    hit_set.add(c)
+    others = [w for w in expanded if len(w) != 1]
+    pool = [w for w in expanded if len(w) == 1]
 
-    need_def_check = [w for w in singles
-                       if not any(c in hit_set for c in candidates_by_word[w])]
-    has_def = set()
-    if need_def_check:
-        with ThreadPoolExecutor(max_workers=ASBC_WORKERS) as ex:
-            def check_def(w):
-                return w, _char_has_definition(w, session)
-            for w, ok in ex.map(check_def, need_def_check):
-                if ok:
-                    has_def.add(w)
+    merged_words = []
+    stoplist_parked = True
+    round_no = 0
+    while len(pool) >= 2 and round_no < 20:
+        idxs = [i for i, c in enumerate(pool) if not (stoplist_parked and c in _STOP_CHARS)]
+        if len(idxs) < 2:
+            if stoplist_parked:
+                stoplist_parked = False
+                continue
+            break
 
-    out = []
-    for w in words:
-        if len(w) == 1 and w in candidates_by_word:
-            hits = [c for c in candidates_by_word[w] if c in hit_set]
-            if hits:
-                out.extend(hits)
-            elif w in has_def:
-                out.append(w)  # 字典裡有定義，保留原字
-            continue  # 兩者都沒有，才整個刪掉
-        out.append(w)
-    return list(dict.fromkeys(out))
+        round_no += 1
+        visible = [pool[i] for i in idxs]
+        candidates = sorted({visible[i] + visible[i + 1] for i in range(len(visible) - 1)})
+        total = len(candidates)
+        yield {"stage": "pair_check", "round": round_no, "done": 0, "total": total}
+        hit_pairs = set()
+        with ThreadPoolExecutor(max_workers=DICT_CHECK_WORKERS) as ex:
+            futures = {ex.submit(_has_dict_entry, c, session): c for c in candidates}
+            done_n = 0
+            for fut in as_completed(futures):
+                c = futures[fut]
+                try:
+                    if fut.result():
+                        hit_pairs.add(c)
+                except Exception:
+                    pass
+                done_n += 1
+                yield {"stage": "pair_check", "round": round_no, "done": done_n, "total": total}
+
+        # 由左到右貪婪認領：候選詞查得到、且左右兩字都還沒被這輪其他詞用掉才算數
+        claimed = [False] * len(visible)
+        found_any = False
+        i = 0
+        while i < len(visible) - 1:
+            pair = visible[i] + visible[i + 1]
+            if pair in hit_pairs and not claimed[i] and not claimed[i + 1]:
+                merged_words.append(pair)
+                claimed[i] = claimed[i + 1] = True
+                found_any = True
+                i += 2
+            else:
+                i += 1
+
+        if not found_any:
+            if stoplist_parked:
+                stoplist_parked = False
+                continue
+            break
+
+        remove_idx = {idxs[j] for j in range(len(visible)) if claimed[j]}
+        pool = [c for i, c in enumerate(pool) if i not in remove_idx]
+
+    # 完全配不出新詞的單字：不代表沒意義（像「超」「給」這種字本身在字典裡
+    # 就查得到定義，只是前後湊不出辭典收錄的詞），查 moedict 有沒有實際定義，
+    # 有就保留，真的完全查無資料（罕見，通常是切錯的雜訊殘片）才整個丟掉。
+    if pool:
+        yield {"stage": "def_check", "done": 0, "total": len(pool)}
+        has_def = set()
+        with ThreadPoolExecutor(max_workers=DICT_CHECK_WORKERS) as ex:
+            futures = {ex.submit(_char_has_definition, w, session): w for w in pool}
+            done_n = 0
+            for fut in as_completed(futures):
+                w = futures[fut]
+                try:
+                    if fut.result():
+                        has_def.add(w)
+                except Exception:
+                    pass
+                done_n += 1
+                yield {"stage": "def_check", "done": done_n, "total": len(pool)}
+        pool = [w for w in pool if w in has_def]
+
+    yield {"__final__": list(dict.fromkeys(others + merged_words + pool))}
 
 def extract_text_from_file(filename, raw):
     """依副檔名從上傳的檔案內容抽出純文字。支援 .txt / .docx / .pdf。"""
@@ -543,8 +554,8 @@ def lookup(word, session):
     if pos != "—" or level != "—":
         return [{"word": word, "pinyin": "—", "pos": pos, "definition": "—", "level": level}]
     # 整詞兩個辭典都查無、詞性也抓不到：這種通常是「簽好」「的話」「拿給」
-    # 這類 ASBC 語料庫認得（斷詞沒切錯）、但辭典本身不收錄的文法組合詞
-    # （動詞＋補語、語助詞短語等），拆成單字個別查，比整詞掛「查無資料」有用。
+    # 這類斷詞沒切錯、但辭典本身不收錄的文法組合詞（動詞＋補語、語助詞短語等），
+    # 拆成單字個別查，比整詞掛「查無資料」有用。
     if len(word) > 1:
         results = []
         for ch in word:
@@ -1234,10 +1245,10 @@ HTML = r"""<!DOCTYPE html>
             const data=JSON.parse(line.slice(6));
             if(data.error){errMsg=data.error;}
             else if(data.done){words=data.words;}
-            else if(data.total){setStatus(`斷詞中… 第 ${data.progress}/${data.total} 段，已找到 ${data.words_so_far} 個詞`);}
-            else if(data.asbc_word_total){setStatus(`驗證無等級詞彙中（中研院語料庫）… ${data.asbc_word_done}/${data.asbc_word_total}`);}
-            else if(data.asbc_total){setStatus(`比對單字語境中（中研院語料庫）… ${data.asbc_done}/${data.asbc_total}`);}
-            else if(data.asbc_def_total){setStatus(`確認單字是否有定義中… ${data.asbc_def_done}/${data.asbc_def_total}`);}
+            else if(data.progress!==undefined){setStatus(`斷詞中… 第 ${data.progress}/${data.total} 段，已找到 ${data.words_so_far} 個詞`);}
+            else if(data.stage==="word_check"){setStatus(`查核多字詞是否為辭典詞條中… ${data.done}/${data.total}`);}
+            else if(data.stage==="pair_check"){setStatus(`第 ${data.round} 輪前後字配對中… ${data.done}/${data.total}`);}
+            else if(data.stage==="def_check"){setStatus(`確認剩餘單字是否有定義中… ${data.done}/${data.total}`);}
           }
         }
 
@@ -1327,90 +1338,15 @@ def segment():
             yield f'data: {json.dumps({"error": "斷詞結果為空"}, ensure_ascii=False)}\n\n'
             return
 
-        # 多字詞若在本機詞彙等級表查不到等級（例如人名「張愛玲」這種沒收錄的詞），
-        # 先整個詞拿去 ASBC 驗證是不是真實語料詞彙：查得到就維持原樣，
-        # 查不到就拆成一個一個字，讓這些字接著跟其他單字一起走前後字驗證。
-        unleveled = [w for w in dict.fromkeys(words) if len(w) > 1 and VOCAB_LEVEL.get(w, "—") == "—"]
-        if unleveled:
-            ul_total = len(unleveled)
-            yield f'data: {json.dumps({"asbc_word_done": 0, "asbc_word_total": ul_total}, ensure_ascii=False)}\n\n'
-            ul_hit = set()
-            with ThreadPoolExecutor(max_workers=ASBC_WORKERS) as ex:
-                futures = {ex.submit(_asbc_has_word, w, session): w for w in unleveled}
-                done_n = 0
-                for fut in as_completed(futures):
-                    w = futures[fut]
-                    try:
-                        if fut.result():
-                            ul_hit.add(w)
-                    except Exception:
-                        pass
-                    done_n += 1
-                    yield f'data: {json.dumps({"asbc_word_done": done_n, "asbc_word_total": ul_total}, ensure_ascii=False)}\n\n'
-            decomposed = []
-            for w in words:
-                if len(w) > 1 and VOCAB_LEVEL.get(w, "—") == "—" and w not in ul_hit:
-                    decomposed.extend(list(w))
-                else:
-                    decomposed.append(w)
-            words = list(dict.fromkeys(decomposed))
+        # 斷詞校正（多字詞辭典查核 → 單字前後字配對，見 _resolve_words_stream）
+        final_words = words
+        for event in _resolve_words_stream(words, session):
+            if "__final__" in event:
+                final_words = event["__final__"]
+            else:
+                yield f'data: {json.dumps(event, ensure_ascii=False)}\n\n'
 
-        # 單字結果：抓原文前後鄰字組成候選詞，比對中研院語料庫（ASBC）是否為真實詞彙，
-        # 查得到就用新詞取代單字，逐一回報比對進度避免前端像卡死。
-        singles = [w for w in words if len(w) == 1]
-        candidates_by_word = {w: _find_context_bigrams(w, text) for w in singles}
-        all_candidates = sorted({c for cs in candidates_by_word.values() for c in cs})
-        hit_set = set()
-        if all_candidates:
-            asbc_total = len(all_candidates)
-            yield f'data: {json.dumps({"asbc_done": 0, "asbc_total": asbc_total}, ensure_ascii=False)}\n\n'
-            with ThreadPoolExecutor(max_workers=ASBC_WORKERS) as ex:
-                futures = {ex.submit(_asbc_has_word, c, session): c for c in all_candidates}
-                done_n = 0
-                for fut in as_completed(futures):
-                    c = futures[fut]
-                    try:
-                        if fut.result():
-                            hit_set.add(c)
-                    except Exception:
-                        pass
-                    done_n += 1
-                    yield f'data: {json.dumps({"asbc_done": done_n, "asbc_total": asbc_total}, ensure_ascii=False)}\n\n'
-
-        # 兩側都查無新詞的單字，不代表沒意義（像「超」「給」這種字典裡本來就查得到
-        # 定義的字，只是剛好前後湊不出 ASBC 認得的詞），改查 moedict 是否有實際定義。
-        need_def_check = [w for w in singles
-                           if not any(c in hit_set for c in candidates_by_word[w])]
-        has_def = set()
-        if need_def_check:
-            def_total = len(need_def_check)
-            yield f'data: {json.dumps({"asbc_def_done": 0, "asbc_def_total": def_total}, ensure_ascii=False)}\n\n'
-            with ThreadPoolExecutor(max_workers=ASBC_WORKERS) as ex:
-                futures = {ex.submit(_char_has_definition, w, session): w for w in need_def_check}
-                done_n = 0
-                for fut in as_completed(futures):
-                    w = futures[fut]
-                    try:
-                        if fut.result():
-                            has_def.add(w)
-                    except Exception:
-                        pass
-                    done_n += 1
-                    yield f'data: {json.dumps({"asbc_def_done": done_n, "asbc_def_total": def_total}, ensure_ascii=False)}\n\n'
-
-        final_words = []
-        for w in words:
-            if len(w) == 1 and w in candidates_by_word:
-                hits = [c for c in candidates_by_word[w] if c in hit_set]
-                if hits:
-                    final_words.extend(hits)
-                elif w in has_def:
-                    final_words.append(w)  # 字典裡有定義，保留原字
-                continue  # 兩者都沒有，才整個刪掉
-            final_words.append(w)
-        words = list(dict.fromkeys(final_words))
-
-        yield f'data: {json.dumps({"done": True, "words": words}, ensure_ascii=False)}\n\n'
+        yield f'data: {json.dumps({"done": True, "words": final_words}, ensure_ascii=False)}\n\n'
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
