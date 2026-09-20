@@ -1,0 +1,40 @@
+name: Build 分詞辭典 exe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "scripts/dict-tool/**"
+      - ".github/workflows/build-dict-exe.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: scripts/dict-tool
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller flask requests beautifulsoup4 openpyxl python-docx pypdf
+
+      - name: Build exe
+        run: >
+          pyinstaller --onefile --name "分詞辭典" --icon dictionary.ico
+          --add-data "vocab_14452.xlsx;."
+          --add-data "easter_eggs;easter_eggs"
+          --hidden-import docx --hidden-import pypdf
+          CNdictionary.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 分詞辭典-exe
+          path: scripts/dict-tool/dist/分詞辭典.exe

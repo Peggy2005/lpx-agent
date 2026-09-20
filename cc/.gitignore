@@ -1,0 +1,9 @@
+node_modules/
+scripts/.env.daemon
+scripts/discord-agent-daemon.log
+.wrangler/
+__pycache__/
+*.pyc
+scripts/dict-tool/build/
+scripts/dict-tool/dist/
+scripts/dict-tool/*.spec

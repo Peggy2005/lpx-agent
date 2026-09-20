@@ -5,14 +5,14 @@
 需要: Python 3.8+（套件會自動安裝）
 """
 
-# ── 自動安裝缺少的套件 ───────────────────────────────────────────────
+# ── 自動安裝缺少的套件（打包成 .exe 後略過，套件已內建）──────────────
 import subprocess, sys, importlib.util
 
 _DEPS = {"flask": "flask", "requests": "requests",
          "bs4": "beautifulsoup4", "openpyxl": "openpyxl",
          "docx": "python-docx", "pypdf": "pypdf"}
-_missing = [pkg for mod, pkg in _DEPS.items()
-            if importlib.util.find_spec(mod) is None]
+_missing = [] if getattr(sys, "frozen", False) else [
+    pkg for mod, pkg in _DEPS.items() if importlib.util.find_spec(mod) is None]
 if _missing:
     print(f"首次執行，安裝套件：{', '.join(_missing)} ...")
     _base_cmd = [sys.executable, "-m", "pip", "install", "--user", *_missing, "-q"]
@@ -727,15 +727,24 @@ HTML = r"""<!DOCTYPE html>
     #btn-bpmf.active { background: #1e3a5f; color: #7dd3fc; border-color: #2563eb; }
     #bpmf-hint { font-size:.82rem; color:#7dd3fc; margin-top:8px; min-height:18px; letter-spacing:.04em; }
     #egg-popup {
-      position: fixed; right: 20px; bottom: 20px; width: 180px;
-      background: #1e2330; border: 1px solid #2d3548; border-radius: 12px;
-      overflow: hidden; box-shadow: 0 8px 28px rgba(0,0,0,.45);
-      opacity: 0; transform: translateY(12px) scale(.96); pointer-events: none;
-      transition: opacity .35s ease, transform .35s ease; z-index: 999; cursor: pointer;
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px;
+      background: rgba(6,8,14,.82); backdrop-filter: blur(6px);
+      opacity: 0; pointer-events: none; transition: opacity .3s ease;
+      z-index: 999; cursor: pointer;
     }
-    #egg-popup.show { opacity: 1; transform: none; pointer-events: auto; }
-    #egg-popup img { display: block; width: 100%; height: 160px; object-fit: cover; }
-    #egg-popup .egg-caption { padding: 8px 10px; font-size: .78rem; color: #cbd5e1; text-align: center; }
+    #egg-popup.show { opacity: 1; pointer-events: auto; }
+    #egg-popup .egg-card {
+      width: min(560px, 92vw); background: #1e2330; border: 1px solid #2d3548;
+      border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.55);
+      transform: scale(.6); transition: transform .35s cubic-bezier(.34,1.56,.64,1);
+    }
+    #egg-popup.show .egg-card { transform: scale(1); }
+    #egg-popup img { display: block; width: 100%; height: min(460px, 60vh); object-fit: cover; }
+    #egg-popup .egg-caption { padding: 14px 16px; font-size: 1rem; font-weight: 600;
+      color: #f8fafc; text-align: center; }
+    #egg-popup .egg-hint { font-size: .78rem; color: #94a3b8; }
+    #egg-popup .egg-sparkle { font-size: 1.4rem; letter-spacing: .3em; }
   </style>
 </head>
 <body>
@@ -788,7 +797,14 @@ HTML = r"""<!DOCTYPE html>
       <tbody id="tbody"></tbody>
     </table>
   </div>
-  <div id="egg-popup"><img id="egg-img" alt=""><div class="egg-caption" id="egg-caption"></div></div>
+  <div id="egg-popup">
+    <div class="egg-sparkle">✨ ✨ ✨</div>
+    <div class="egg-card">
+      <img id="egg-img" alt="">
+      <div class="egg-caption" id="egg-caption"></div>
+    </div>
+    <div class="egg-hint">（點擊任意處關閉）</div>
+  </div>
   <script>
     // ── 大千式注音輸入支援 ──────────────────────────────────────────────
     const BPMF_KEYS={'1':'ㄅ','q':'ㄆ','a':'ㄇ','z':'ㄈ','2':'ㄉ','w':'ㄊ','s':'ㄋ','x':'ㄌ',
@@ -1157,10 +1173,31 @@ HTML = r"""<!DOCTYPE html>
     setRandomBg();
 
     // ── 查詢完成小彩蛋：低機率跳出隨機圖 ─────────────────────────────
-    const EGG_CAPTIONS=["查到啦～","辛苦了，休息一下","小獎勵，笑一個","咦，發現你了","繼續加油查詢"];
+    const EGG_CAPTIONS=[
+      "很高興認識你，不是客套。","有個搭檔好像也不錯。","下次在安全的地方見面吧。",
+      "雙人遊戲不會再缺隊友了。","第二杯半價也有人分享了。","我的烤箱，還是交給你吧。",
+      "你讓生活變得有趣多了。","每一句明天見都不食言。","今天可以蹭飯嗎……",
+      "總夢到一個人，代表什麼?","兩個人一起，好像也不錯。","和你有關的事，都很重要。",
+      "總有一顆星星是為你亮的。","需要後援時，我一直都在。","我唯一的願望是和你一起。",
+      "一起走吧，耳機分你一半。","換了雙人沙發，想試試嗎?","沒有失眠也可以隨時找我。",
+      "想做的不只是你的搭檔。","沒遇見春天，先遇見了你。","你在哪裡，光就在哪裡。",
+      "樓下的貓很想你，我也是。","看書時總忍不住分心看你。","才說了再見就開始想你。",
+      "我的心只會被一個人撥動。","你總是我微笑的理由。","晚安，我的白日夢。",
+      "把星光戴在手上，怎麼樣?","想和你去時間盡頭看看。","想見你，不只是某日限定。",
+      "我會和星光一起守護你。","我有一份禮物想送給你。","合理，合法，合情，和你。",
+      "我繞得過萬里山河錯落，繞不過你。","你是我耗盡最後熱情，也要堅定的選擇。",
+      "你的每一條動態，我都像在做閱讀理解。","原來入了心的人，見與不見都會思念。",
+      "儘管我滿身疲憊，可當看到你的時候眼裡總有光芒。","因為心裡有一個滿分的人，所以看誰都差點意思。",
+      "去見你的路上，陽光溫熱，雲朵可愛，想必晚風吹來，也是甜的。","我的光芒，只朝向你在的方向。",
+      "還是讓星星自己落下來，留在你身邊吧。","如果這個世界真的已經無處可逃，那至少，你還可以逃來我身邊。",
+      "螢火替你的眼睛放哨，沒有什麼能破壞你的美夢了。",
+      "我只是一顆星體，浮游於沈睡的黑暗。這一路上，閃電拂過星塵有無數個瞬間。但我不能停下。我的意思是……我好想你。",
+      "深空之中，也許有一顆星星，正在穿過無盡黑夜，即將來到你的身邊。",
+      "宇宙在你沈睡時消失不見，群星在你出現後熠熠生輝。","我很慶幸能成為那顆璀璨星辰的同行者。"
+    ];
     let eggTimer=null;
     function maybeShowEasterEgg(){
-      if(Math.random()>0.08)return;  // 8% 機率
+      if(Math.random()>0.2)return;  // 20% 機率
       const popup=document.getElementById("egg-popup"),
             img=document.getElementById("egg-img"),
             caption=document.getElementById("egg-caption");
