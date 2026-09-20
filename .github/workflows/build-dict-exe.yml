@@ -1,0 +1,31 @@
+name: Build DictTool exe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: cc/scripts/dict-tool
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller flask requests beautifulsoup4 openpyxl python-docx pypdf
+
+      - name: Build exe
+        run: |
+          pyinstaller --onefile --windowed --name DictTool --icon dictionary.ico --add-data "vocab_14452.xlsx;." CNdictionary.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DictTool-windows
+          path: cc/scripts/dict-tool/dist/DictTool.exe
