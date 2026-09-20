@@ -60,6 +60,7 @@ DICT_CHECK_WORKERS = 8
 # 詞條（如「一碗」「了一」），先跳過讓其他實詞優先配對，配不出新詞了才放回來一起試。
 _STOP_CHARS = set(
     "了著過"                    # 動貌助詞
+    "的地得"                    # 同音結構助詞（的字短語／狀語／補語標記）
     "一二三四五六七八九十"       # 數詞
     "個次"                      # 使用者指定的量詞
     "位隻張條件支枝把顆粒塊片本冊篇首幅幢棟間層座棵株朵束串"
@@ -270,23 +271,43 @@ def _resolve_words_stream(words, session):
         else:
             expanded.append(w)
 
-    others = [w for w in expanded if len(w) != 1]
-    pool = [w for w in expanded if len(w) == 1]
+    # pool 保留完整序列（含已保留的多字詞）——多字詞是無法跨越的隔板，
+    # 兩側原本不相鄰的單字不能因為中間的多字詞而被誤判成相鄰去配對。
+    # 只有單字才會被拿掉／替換；多字詞的位置永遠不變。
+    pool = list(expanded)
+
+    def _segments(stoplist_parked):
+        """回傳這一輪可互相配對的連續單字片段（各為 pool 的 index 清單）。
+        多字詞切斷片段；停用字（僅第一輪）只是跳過不參與配對，不切斷片段——
+        片段內兩側的字還是可以隔著被跳過的停用字互相配對。"""
+        segs, cur = [], []
+        for i, tok in enumerate(pool):
+            if len(tok) > 1:
+                if cur:
+                    segs.append(cur)
+                cur = []
+                continue
+            if stoplist_parked and tok in _STOP_CHARS:
+                continue
+            cur.append(i)
+        if cur:
+            segs.append(cur)
+        return segs
 
     merged_words = []
     stoplist_parked = True
     round_no = 0
-    while len(pool) >= 2 and round_no < 20:
-        idxs = [i for i, c in enumerate(pool) if not (stoplist_parked and c in _STOP_CHARS)]
-        if len(idxs) < 2:
+    while round_no < 20:
+        segments = _segments(stoplist_parked)
+        pair_slots = [(seg[k], seg[k + 1]) for seg in segments for k in range(len(seg) - 1)]
+        if not pair_slots:
             if stoplist_parked:
                 stoplist_parked = False
                 continue
             break
 
         round_no += 1
-        visible = [pool[i] for i in idxs]
-        candidates = sorted({visible[i] + visible[i + 1] for i in range(len(visible) - 1)})
+        candidates = sorted({pool[a] + pool[b] for a, b in pair_slots})
         total = len(candidates)
         yield {"stage": "pair_check", "round": round_no, "done": 0, "total": total}
         hit_pairs = set()
@@ -303,19 +324,22 @@ def _resolve_words_stream(words, session):
                 done_n += 1
                 yield {"stage": "pair_check", "round": round_no, "done": done_n, "total": total}
 
-        # 由左到右貪婪認領：候選詞查得到、且左右兩字都還沒被這輪其他詞用掉才算數
-        claimed = [False] * len(visible)
+        # 由左到右貪婪認領：同一片段內，候選詞查得到、且左右兩字都還沒被
+        # 這輪其他詞用掉才算數；片段之間互不影響。
+        claimed = set()
         found_any = False
-        i = 0
-        while i < len(visible) - 1:
-            pair = visible[i] + visible[i + 1]
-            if pair in hit_pairs and not claimed[i] and not claimed[i + 1]:
-                merged_words.append(pair)
-                claimed[i] = claimed[i + 1] = True
-                found_any = True
-                i += 2
-            else:
-                i += 1
+        for seg in segments:
+            k = 0
+            while k < len(seg) - 1:
+                a, b = seg[k], seg[k + 1]
+                pair = pool[a] + pool[b]
+                if pair in hit_pairs and a not in claimed and b not in claimed:
+                    merged_words.append(pair)
+                    claimed.add(a); claimed.add(b)
+                    found_any = True
+                    k += 2
+                else:
+                    k += 1
 
         if not found_any:
             if stoplist_parked:
@@ -323,8 +347,10 @@ def _resolve_words_stream(words, session):
                 continue
             break
 
-        remove_idx = {idxs[j] for j in range(len(visible)) if claimed[j]}
-        pool = [c for i, c in enumerate(pool) if i not in remove_idx]
+        pool = [tok for i, tok in enumerate(pool) if i not in claimed]
+
+    others = [w for w in pool if len(w) != 1]
+    pool = [w for w in pool if len(w) == 1]
 
     # 完全配不出新詞的單字：不代表沒意義（像「超」「給」這種字本身在字典裡
     # 就查得到定義，只是前後湊不出辭典收錄的詞），查 moedict 有沒有實際定義，
