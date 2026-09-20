@@ -1150,8 +1150,11 @@ HTML = r"""<!DOCTYPE html>
       flush();
       return syls;
     }
-    // ── 每次開頁隨機背景圖 ───────────────────────────────────────────
-    document.documentElement.style.setProperty("--bg-img", `url(/egg/${1+Math.floor(Math.random()*10)})`);
+    // ── 隨機背景圖：開頁換一次，之後每次查詢完成再換一次 ─────────────
+    function setRandomBg(){
+      document.documentElement.style.setProperty("--bg-img", `url(/egg/${1+Math.floor(Math.random()*10)})`);
+    }
+    setRandomBg();
 
     // ── 查詢完成小彩蛋：低機率跳出隨機圖 ─────────────────────────────
     const EGG_CAPTIONS=["查到啦～","辛苦了，休息一下","小獎勵，笑一個","咦，發現你了","繼續加油查詢"];
@@ -1265,6 +1268,7 @@ HTML = r"""<!DOCTYPE html>
               sortByLevelDesc();
               setLoading(false);setStatus(`完成，共 ${allResults.length} 筆（依單字級數降冪排序）`);
               if(allResults.length)btnExport.style.display="inline-block";
+              setRandomBg();
               maybeShowEasterEgg();
               continue;
             }
