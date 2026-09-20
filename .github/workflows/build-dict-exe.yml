@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller flask requests beautifulsoup4 openpyxl python-docx pypdf
+          pip install pyinstaller pillow flask requests beautifulsoup4 openpyxl python-docx pypdf
 
       - name: Build exe
         run: |
