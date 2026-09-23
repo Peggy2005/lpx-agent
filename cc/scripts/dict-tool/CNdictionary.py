@@ -47,8 +47,8 @@ BASE = "https://dict.concised.moe.edu.tw"
 MOEDICT_URL = "https://www.moedict.tw/a/{word}.json"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Language": "zh-TW,zh;q=0.9"}
 VOCAB_XLSX = Path(__file__).parent / "vocab_14452.xlsx"
-EASTER_EGG_DIR = Path(__file__).parent / "easter_eggs"
-EASTER_EGG_COUNT = 10
+MASCOT_DIR = Path(__file__).parent / "mascot"
+BRANDING_DIR = Path(__file__).parent / "branding"
 
 # 國教院《教材編輯輔助系統》斷詞（語料庫固定遠流語料，關聯詞數量固定 10）
 COCT_URL = "https://coct.naer.edu.tw/edit.jsp"
@@ -238,12 +238,24 @@ def _char_has_definition(word, session):
     except Exception:
         return False
 
+_VARIANT_TABLE = str.maketrans({"台": "臺"})  # 辭典正式詞條多用「臺」，但「台灣」「台北」等一般慣用「台」
+
 def _has_dict_entry(word, session):
     """判斷 word 在萌典或教育部簡編本任一查得到詞條，用來決定斷詞校正時
-    一個多字詞/候選詞是否成立——只看「辭典收不收」，不管語料庫怎麼標。"""
+    一個多字詞/候選詞是否成立——只看「辭典收不收」，不管語料庫怎麼標。
+    查不到再試「台→臺」異體字，否則「台灣」「台北」這種常見詞會被誤判成
+    辭典查無、進而在後面的配對邏輯裡被拆回單字。"""
     if get_moedict_pos_groups(word, session):
         return True
     entries = lookup_concised(word, session)
+    if bool(entries) and entries[0].get("pinyin") != "錯誤":
+        return True
+    variant = word.translate(_VARIANT_TABLE)
+    if variant == word:
+        return False
+    if get_moedict_pos_groups(variant, session):
+        return True
+    entries = lookup_concised(variant, session)
     return bool(entries) and entries[0].get("pinyin") != "錯誤"
 
 def _resolve_words_stream(words, session):
@@ -584,7 +596,30 @@ def lookup(word, session):
                 results.append({"word": word, "pinyin": e["pinyin"] or "—",
                                 "pos": pos, "definition": e["definition"] or "—", "level": level})
         return results
-    # 兩個辭典都沒有完整詞條 — 只要還撈得到詞性或等級，就把能給的給出去，
+    # 兩個辭典都查無完整詞條：先試「台→臺」異體字（辭典正式詞條多用臺，
+    # 「台灣」「台北」這種詞查不到，「臺灣」「臺北」才查得到），顯示仍用
+    # 原字形——這一步要放在「只要有詞性/等級就不判查無資料」的保底之前，
+    # 否則「台灣」這種本身就在等級表裡的詞，會在還沒試過異體字前就被那條
+    # 保底規則接走，只給「—」佔位而查不到真正的釋義。
+    variant = word.translate(_VARIANT_TABLE)
+    if variant != word:
+        variant_pos_groups = get_moedict_pos_groups(variant, session)
+        if variant_pos_groups:
+            return [{"word": word, "pinyin": e["pinyin"] or "—",
+                     "pos": e["pos"], "definition": e["definition"], "level": level}
+                    for e in variant_pos_groups]
+        variant_entries = lookup_concised(variant, session)
+        if variant_entries:
+            variant_pos = get_pos(variant, session)
+            results = []
+            for e in variant_entries:
+                if e["pinyin"] == "錯誤":
+                    results.append({"word": word, "pinyin": "錯誤", "pos": "—", "definition": e["definition"], "level": level})
+                else:
+                    results.append({"word": word, "pinyin": e["pinyin"] or "—",
+                                    "pos": variant_pos, "definition": e["definition"] or "—", "level": level})
+            return results
+    # 異體字也查無完整詞條：只要還撈得到詞性或等級，就把能給的給出去，
     # 不要整列判「查無資料」
     if pos != "—" or level != "—":
         return [{"word": word, "pinyin": "—", "pos": pos, "definition": "—", "level": level}]
@@ -651,12 +686,6 @@ HTML = r"""<!DOCTYPE html>
       background: #0f1117; color: #e2e8f0;
       min-height: 100vh; display: flex; flex-direction: column;
       align-items: center; padding: 48px 16px 80px;
-    }
-    body::before {
-      content: ""; position: fixed; inset: 0; z-index: -1;
-      background-image: var(--bg-img, none);
-      background-size: cover; background-position: center;
-      filter: blur(2px); opacity: .2;
     }
     h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: .04em; color: #f8fafc; margin-bottom: 6px; }
     .subtitle { font-size: .85rem; color: #64748b; margin-bottom: 36px; }
@@ -726,30 +755,126 @@ HTML = r"""<!DOCTYPE html>
     #btn-bpmf { background: #1a2a3a; color: #64748b; border: 1px solid #2d3548; font-size:.85rem; }
     #btn-bpmf.active { background: #1e3a5f; color: #7dd3fc; border-color: #2563eb; }
     #bpmf-hint { font-size:.82rem; color:#7dd3fc; margin-top:8px; min-height:18px; letter-spacing:.04em; }
-    #egg-popup {
-      position: fixed; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 18px;
-      background: rgba(6,8,14,.82); backdrop-filter: blur(6px);
-      opacity: 0; pointer-events: none; transition: opacity .3s ease;
-      z-index: 999; cursor: pointer;
+    .progress-wrap { display: none; width: 100%; max-width: 780px; margin-top: 18px;
+                      flex-direction: column; align-items: center; gap: 6px; }
+    .progress-body { width: 100%; }
+    .loading-pet { width: 160px; height: 160px; object-fit: contain;
+                    filter: drop-shadow(0 4px 10px rgba(0,0,0,.55));
+                    animation: petBob 1s ease-in-out infinite; }
+    @keyframes petBob {
+      0%,100% { transform: translateY(0) rotate(0deg); }
+      50% { transform: translateY(-4px) rotate(-2deg); }
     }
-    #egg-popup.show { opacity: 1; pointer-events: auto; }
-    #egg-popup .egg-card {
-      width: min(560px, 92vw); background: #1e2330; border: 1px solid #2d3548;
-      border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.55);
-      transform: scale(.6); transition: transform .35s cubic-bezier(.34,1.56,.64,1);
+    .progress-label { display: flex; justify-content: space-between; align-items: baseline;
+                       font-size: .8rem; color: #94a3b8; margin-bottom: 7px; letter-spacing: .04em; }
+    .progress-label .progress-pct { color: #fbbf24; font-weight: 700; font-size: .95rem; }
+    .progress-track { width: 100%; height: 16px; background: #0b0d13; border: 1.5px solid #2d3548;
+                       border-radius: 999px; overflow: hidden; box-shadow: inset 0 1px 4px rgba(0,0,0,.5); }
+    .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#f59e0b,#fbbf24);
+                      border-radius: 999px; transition: width .25s ease;
+                      box-shadow: 0 0 10px rgba(251,191,36,.6);
+                      animation: progressPulse 1.4s ease-in-out infinite; }
+    @keyframes progressPulse {
+      0%,100% { box-shadow: 0 0 6px rgba(251,191,36,.45); }
+      50% { box-shadow: 0 0 18px rgba(251,191,36,.9); }
     }
-    #egg-popup.show .egg-card { transform: scale(1); }
-    #egg-popup img { display: block; width: 100%; height: min(460px, 60vh); object-fit: cover; }
-    #egg-popup .egg-caption { padding: 14px 16px; font-size: 1rem; font-weight: 600;
-      color: #f8fafc; text-align: center; }
-    #egg-popup .egg-hint { font-size: .78rem; color: #94a3b8; }
-    #egg-popup .egg-sparkle { font-size: 1.4rem; letter-spacing: .3em; }
+    .joke-text { margin-top: 10px; font-size: .82rem; color: #64748b; font-style: italic;
+                  min-height: 16px; text-align: center; }
+    .segment-line { display: none; width: 100%; max-width: 780px; margin-top: 16px;
+                     background: #1a2236; border: 1px solid #2d3548; border-radius: 8px;
+                     padding: 10px 14px; font-size: .85rem; overflow-x: auto; white-space: nowrap; }
+    .segment-line .seg-label { color: #7dd3fc; font-weight: 600; margin-right: 8px; white-space: nowrap; }
+    .segment-line .seg-word { display: inline-block; background: #232b40; color: #cbd5e1;
+                               border-radius: 5px; padding: 2px 8px; margin-right: 6px; font-size: .82rem; }
+    .header-row { display: flex; align-items: flex-start; gap: 18px; margin-bottom: 22px; }
+    .logo-menu { position: relative; }
+    .site-logo { height: 88px; width: auto; display: block; cursor: pointer;
+                  filter: drop-shadow(0 3px 8px rgba(0,0,0,.5));
+                  transition: transform .15s ease; }
+    .site-logo:hover { transform: scale(1.06); }
+    .logo-dropdown { position: absolute; top: 100%; left: 0; margin-top: 10px;
+                      background: #1e2330; border: 1px solid #2d3548; border-radius: 10px;
+                      min-width: 250px; padding: 6px; box-shadow: 0 14px 34px rgba(0,0,0,.55);
+                      display: none; flex-direction: column; z-index: 600; }
+    .logo-dropdown.show { display: flex; }
+    .dd-item { display: block; padding: 10px 12px; border-radius: 7px; cursor: pointer;
+                color: #e2e8f0; text-decoration: none; }
+    .dd-item:hover { background: #232b40; }
+    .dd-static { cursor: default; }
+    .dd-static:hover { background: transparent; }
+    .dd-title { font-size: .92rem; font-weight: 600; }
+    .dd-sub { display: block; font-size: .76rem; color: #7dd3fc; margin-top: 3px; text-decoration: none; }
+    .fullscreen-overlay { position: fixed; inset: 0; background: rgba(4,5,9,.94);
+                           display: none; flex-direction: column; align-items: center;
+                           justify-content: center; gap: 20px; z-index: 900; cursor: pointer; }
+    .fullscreen-overlay.show { display: flex; }
+    .fullscreen-overlay img { max-width: min(80vw, 480px); max-height: 58vh; object-fit: contain; }
+    .fullscreen-overlay .roast-caption { font-size: 1.3rem; font-weight: 700; color: #fbbf24;
+                                          text-align: center; padding: 0 24px; }
+    .fullscreen-overlay .roast-hint { font-size: .8rem; color: #64748b; }
+    .toast-overlay { position: fixed; inset: 0; background: rgba(4,5,9,.6);
+                      display: none; align-items: center; justify-content: center;
+                      z-index: 900; cursor: pointer; }
+    .toast-overlay.show { display: flex; }
+    .toast-box { background: #1e2330; border: 1px solid #2d3548; border-radius: 12px;
+                  padding: 22px 30px; font-size: 1.05rem; color: #f8fafc; text-align: center; }
+    .credits-box { min-width: 260px; text-align: left; padding: 24px 32px; }
+    .credits-title { font-size: 1.15rem; font-weight: 700; color: #f8fafc;
+                      text-align: center; margin-bottom: 16px; letter-spacing: .04em; }
+    .credits-row { display: flex; flex-direction: column; gap: 2px;
+                    padding: 10px 0; border-top: 1px solid #2d3548; }
+    .credits-row:first-of-type { border-top: none; }
+    .credits-name { font-size: 1rem; font-weight: 600; color: #e2e8f0; }
+    .credits-role { font-size: .78rem; color: #7dd3fc; }
+    .credits-note { margin-top: 14px; padding-top: 14px; border-top: 1px solid #2d3548;
+                     font-size: .82rem; line-height: 1.6; color: #94a3b8; }
+    .credits-note a { color: #7dd3fc; }
+    .credits-hint { margin-top: 16px; font-size: .76rem; color: #64748b; text-align: center; }
   </style>
 </head>
 <body>
-  <h1>國語辭典查詢</h1>
-  <p class="subtitle">教育部《國語辭典簡編本》· 自動輸出 Excel</p>
+  <div class="header-row">
+    <div class="logo-menu" id="logo-menu">
+      <img id="site-logo" class="site-logo" src="/branding/logo.png" alt="選單">
+      <div class="logo-dropdown" id="logo-dropdown">
+        <div class="dd-item dd-static">
+          <div class="dd-title">任何更新意見</div>
+          <a class="dd-sub" href="mailto:linl90050@gmail.com">請聯絡：linl90050@gmail.com</a>
+        </div>
+        <div class="dd-item" id="dd-tutorial"><div class="dd-title">新手教學</div></div>
+        <a class="dd-item" id="dd-relax" href="https://youtu.be/_AZbmYxysf0?si=oUYNUbexo0pK5kSf" target="_blank" rel="noopener"><div class="dd-title">放鬆一下</div></a>
+        <div class="dd-item" id="dd-roast"><div class="dd-title">網站做太差？</div></div>
+        <div class="dd-item" id="dd-credits"><div class="dd-title">作者頁</div></div>
+      </div>
+    </div>
+    <div style="margin-top:22px;">
+      <h1>國語辭典查詢</h1>
+      <p class="subtitle">教育部《國語辭典簡編本》· 萌典 · 國教院「教材編輯輔助系統」斷詞 · 自動輸出 Excel</p>
+    </div>
+  </div>
+  <div class="fullscreen-overlay" id="roast-overlay">
+    <img src="/branding/roast-dog.png" alt="">
+    <div class="roast-caption">罵了他就不能罵我了喔</div>
+    <div class="roast-hint">按任意鍵關閉</div>
+  </div>
+  <div class="toast-overlay" id="credits-overlay">
+    <div class="toast-box credits-box">
+      <div class="credits-title">作者頁</div>
+      <div class="credits-row">
+        <span class="credits-name">林錦崧</span>
+        <span class="credits-role">銘傳大學華語文教學學系 · 分詞語法邏輯設計</span>
+      </div>
+      <div class="credits-row">
+        <span class="credits-name">林佩萱</span>
+        <span class="credits-role">國立中興大學電機工程學系 · 開發</span>
+      </div>
+      <p class="credits-note">
+        這是我們的專題題目，做得倉促的地方應該不少，如果你發現什麼奇怪的、覺得可以改進的部分，
+        真的很歡迎跟我們說一聲——<a href="mailto:linl90050@gmail.com">linl90050@gmail.com</a>。
+      </p>
+      <div class="credits-hint">點擊任意處關閉</div>
+    </div>
+  </div>
   <div class="card">
     <label for="words-input">輸入詞彙</label>
     <div class="input-row">
@@ -791,19 +916,20 @@ HTML = r"""<!DOCTYPE html>
       以及含阿拉伯數字或非中文字元的詞後查詢。
     </p>
   </div>
+  <div class="progress-wrap" id="progress-wrap">
+    <div class="progress-body">
+      <div class="progress-label"><span>查詢進度</span><span class="progress-pct" id="progress-pct">0%</span></div>
+      <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="joke-text" id="joke-text"></div>
+    </div>
+    <img id="loading-pet" class="loading-pet" src="/mascot/bunny_typing_00.png" alt="查詢中">
+  </div>
+  <div class="segment-line" id="segment-line"></div>
   <div class="table-wrap" id="table-wrap">
     <table>
       <thead><tr><th>漢字詞彙</th><th>音標</th><th>詞類</th><th>意思</th><th>詞彙等級</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
-  </div>
-  <div id="egg-popup">
-    <div class="egg-sparkle">✨ ✨ ✨</div>
-    <div class="egg-card">
-      <img id="egg-img" alt="">
-      <div class="egg-caption" id="egg-caption"></div>
-    </div>
-    <div class="egg-hint">（點擊任意處關閉）</div>
   </div>
   <script>
     // ── 大千式注音輸入支援 ──────────────────────────────────────────────
@@ -1166,52 +1292,6 @@ HTML = r"""<!DOCTYPE html>
       flush();
       return syls;
     }
-    // ── 隨機背景圖：開頁換一次，之後每次查詢完成再換一次 ─────────────
-    function setRandomBg(){
-      document.documentElement.style.setProperty("--bg-img", `url(/egg/${1+Math.floor(Math.random()*10)})`);
-    }
-    setRandomBg();
-
-    // ── 查詢完成小彩蛋：低機率跳出隨機圖 ─────────────────────────────
-    const EGG_CAPTIONS=[
-      "很高興認識你，不是客套。","有個搭檔好像也不錯。","下次在安全的地方見面吧。",
-      "雙人遊戲不會再缺隊友了。","第二杯半價也有人分享了。","我的烤箱，還是交給你吧。",
-      "你讓生活變得有趣多了。","每一句明天見都不食言。","今天可以蹭飯嗎……",
-      "總夢到一個人，代表什麼?","兩個人一起，好像也不錯。","和你有關的事，都很重要。",
-      "總有一顆星星是為你亮的。","需要後援時，我一直都在。","我唯一的願望是和你一起。",
-      "一起走吧，耳機分你一半。","換了雙人沙發，想試試嗎?","沒有失眠也可以隨時找我。",
-      "想做的不只是你的搭檔。","沒遇見春天，先遇見了你。","你在哪裡，光就在哪裡。",
-      "樓下的貓很想你，我也是。","看書時總忍不住分心看你。","才說了再見就開始想你。",
-      "我的心只會被一個人撥動。","你總是我微笑的理由。","晚安，我的白日夢。",
-      "把星光戴在手上，怎麼樣?","想和你去時間盡頭看看。","想見你，不只是某日限定。",
-      "我會和星光一起守護你。","我有一份禮物想送給你。","合理，合法，合情，和你。",
-      "我繞得過萬里山河錯落，繞不過你。","你是我耗盡最後熱情，也要堅定的選擇。",
-      "你的每一條動態，我都像在做閱讀理解。","原來入了心的人，見與不見都會思念。",
-      "儘管我滿身疲憊，可當看到你的時候眼裡總有光芒。","因為心裡有一個滿分的人，所以看誰都差點意思。",
-      "去見你的路上，陽光溫熱，雲朵可愛，想必晚風吹來，也是甜的。","我的光芒，只朝向你在的方向。",
-      "還是讓星星自己落下來，留在你身邊吧。","如果這個世界真的已經無處可逃，那至少，你還可以逃來我身邊。",
-      "螢火替你的眼睛放哨，沒有什麼能破壞你的美夢了。",
-      "我只是一顆星體，浮游於沈睡的黑暗。這一路上，閃電拂過星塵有無數個瞬間。但我不能停下。我的意思是……我好想你。",
-      "深空之中，也許有一顆星星，正在穿過無盡黑夜，即將來到你的身邊。",
-      "宇宙在你沈睡時消失不見，群星在你出現後熠熠生輝。","我很慶幸能成為那顆璀璨星辰的同行者。"
-    ];
-    let eggTimer=null;
-    function maybeShowEasterEgg(){
-      if(Math.random()>0.2)return;  // 20% 機率
-      const popup=document.getElementById("egg-popup"),
-            img=document.getElementById("egg-img"),
-            caption=document.getElementById("egg-caption");
-      const n=1+Math.floor(Math.random()*10);
-      img.src=`/egg/${n}`;
-      caption.textContent=EGG_CAPTIONS[Math.floor(Math.random()*EGG_CAPTIONS.length)];
-      popup.classList.add("show");
-      clearTimeout(eggTimer);
-      eggTimer=setTimeout(()=>popup.classList.remove("show"),4000);
-    }
-    document.getElementById("egg-popup").addEventListener("click",()=>{
-      clearTimeout(eggTimer);
-      document.getElementById("egg-popup").classList.remove("show");
-    });
     function bpmfConvert(raw){
       // ASCII comma=ㄝ in 大千式; use full-width ，、 to separate search terms
       return raw.split(/([，、]+)/).map(part=>{
@@ -1227,8 +1307,68 @@ HTML = r"""<!DOCTYPE html>
           statusTxt=document.getElementById("status-text"),tableWrap=document.getElementById("table-wrap"),
           tbody=document.getElementById("tbody");
     const btnBpmf=document.getElementById("btn-bpmf"),bpmfHint=document.getElementById("bpmf-hint");
-    let allResults=[],es=null;
-    const setLoading=on=>{spinner.style.display=on?"block":"none";btnSearch.disabled=on;};
+    const progressWrap=document.getElementById("progress-wrap"),progressFill=document.getElementById("progress-fill"),
+          progressPct=document.getElementById("progress-pct"),
+          jokeText=document.getElementById("joke-text"),segmentLine=document.getElementById("segment-line"),
+          outputPathInput=document.getElementById("output-path"),loadingPet=document.getElementById("loading-pet");
+    let allResults=[],es=null,searchGen=0;
+    // ── 查詢中的短短幹話（隨機輪播）─────────────────────────────────
+    const JOKES=[
+      "別急，CPU也是要喘口氣的。","查字典比查感情史快多了。","進度條走得比感情還慢。",
+      "資料庫說它已經很努力了。","不要catch我，我在try。","斷詞比斷網還讓人崩潰。",
+      "我沒有偷懶，只是在裝忙。","再等一下，馬上就好，大概。","別看我，我只是個進度條。",
+      "這個字很難，讓我想想人生。","查詢中，禁止吃瓜。","程式碼跑得比你早起還難。",
+      "萌典正在偷偷打字中。","斷詞斷到自己都詞窮了。","資料正在飛過來的路上迷路。",
+      "耐心是美德，但等太久是折磨。","伺服器：我很快，只是很忙。","查無此詞，但查到了人生道理。",
+      "詞還沒找到，耐心快用完了。","系統正在努力假裝有進度。","你的查詢已上路，目前塞車中。",
+      "不是當機，只是沉思得比較久。","字海茫茫，撈一下就回來。","正在問伺服器，它已讀不回。",
+      "先別關掉，奇蹟正在載入。","這個詞躲得很好，再找一下。","查詢跑很快，只是終點有點遠。",
+      "系統沒有卡，是時間變慢了。","正在把資料從宇宙另一端搬來。","斷詞進行中，請勿打斷。",
+      "字典翻到一半，突然忘記要找什麼。","別催，再催就顯示「查無資料」。","正在召喚失蹤的詞彙。",
+      "資料有來，只是走得比較優雅。","系統正在思考這個詞值不值得查。","查詢很順利，除了還沒有結果。",
+      "進度條已經盡力表演了。","稍候，資料正在排隊進場。","不是你網路慢，是字典太有深度。",
+      "正在努力理解你想表達什麼。","有些詞一轉身，就是一輩子的載入。","查詢結果正在醞釀，可能有點濃。",
+      "系統忙著找詞，沒空解釋。","快了快了，這次可能是真的。","你的詞正在跟伺服器玩躲貓貓。",
+      "正在整理文字，順便整理心情。","資料不是不來，只是不想面對。","找不到答案時，先怪網路。",
+      "每一次載入，都是對耐心的測驗。","請保持冷靜，字典比你更慌。"
+    ];
+    let jokeTimer=null;
+    const startJokes=()=>{
+      jokeText.textContent=JOKES[Math.floor(Math.random()*JOKES.length)];
+      clearInterval(jokeTimer);
+      jokeTimer=setInterval(()=>{jokeText.textContent=JOKES[Math.floor(Math.random()*JOKES.length)];},2200);
+    };
+    const stopJokes=()=>{clearInterval(jokeTimer);jokeTimer=null;jokeText.textContent="";};
+    // ── 粉色兔子吉祥物：只在查詢/斷詞真正跑的時候出現，跟進度條同開同關 ──
+    const MASCOT_FRAMES=Array.from({length:8},(_,i)=>`/mascot/bunny_typing_0${i}.png`);
+    let mascotTimer=null,mascotIdx=0;
+    const startMascot=()=>{
+      mascotIdx=0;loadingPet.src=MASCOT_FRAMES[0];
+      clearInterval(mascotTimer);
+      mascotTimer=setInterval(()=>{
+        mascotIdx=(mascotIdx+1)%MASCOT_FRAMES.length;
+        loadingPet.src=MASCOT_FRAMES[mascotIdx];
+      },90);
+    };
+    const stopMascot=()=>{clearInterval(mascotTimer);mascotTimer=null;};
+    // 累積式進度：一整個操作（斷詞→查核→配對→定義確認→查詢）只往前走，
+    // 不會因為換到下一個階段就掉回 0%。stagePct 把「這個階段自己的
+    // done/total」換算成整條進度條裡佔的那一段（offset~offset+span）；
+    // bumpProgress 用 Math.max 確保畫面上的百分比只增不減。
+    let progressMax=0;
+    const resetProgress=()=>{progressMax=0;progressFill.style.width="0%";progressPct.textContent="0%";};
+    const bumpProgress=pct=>{
+      progressMax=Math.max(progressMax,Math.min(100,Math.max(0,pct)));
+      progressFill.style.width=progressMax+"%";
+      progressPct.textContent=Math.round(progressMax)+"%";
+    };
+    const stagePct=(done,total,offset,span)=>offset+(total?Math.min(1,done/total):0)*span;
+    const setLoading=on=>{
+      spinner.style.display=on?"block":"none";btnSearch.disabled=on;
+      outputPathInput.disabled=on;excludeInput.disabled=on;
+      progressWrap.style.display=on?"flex":"none";
+      if(on){startJokes();startMascot();} else {stopJokes();stopMascot();}
+    };
     const setStatus=msg=>{statusTxt.textContent=msg;};
     // 由低到高排等級順序，"—"（沒有等級資料）永遠排最後
     const LEVEL_ORDER=["基礎第1級","基礎第1*級","基礎第2級","基礎第2*級","基礎第3級","基礎第3*級",
@@ -1275,9 +1415,10 @@ HTML = r"""<!DOCTYPE html>
     input.addEventListener("input",()=>{
       if(bpmfMode) bpmfHint.textContent=bpmfConvert(input.value)||"";
     });
-    async function doSearch(){
-      let raw=input.value.trim();if(!raw){input.focus();return;}
-      if(bpmfMode) raw=bpmfConvert(raw);
+    async function runWordSearch(raw,range){
+      if(!raw)return;
+      searchGen++;
+      const {offset,span}=range||{offset:0,span:100};
       if(es){es.abort();es=null;}
       tbody.innerHTML="";allResults=[];tableWrap.style.display="none";
       btnExport.style.display="none";setLoading(true);setStatus("查詢中…");
@@ -1302,16 +1443,18 @@ HTML = r"""<!DOCTYPE html>
             if(!line.startsWith("data: "))continue;
             const data=JSON.parse(line.slice(6));
             if(data.done){
+              // 查詢跑完才把表格整個顯示出來，而不是邊查邊冒出來
               sortByLevelDesc();
+              bumpProgress(offset+span);
+              tableWrap.style.display="block";
               setLoading(false);setStatus(`完成，共 ${allResults.length} 筆（依單字級數降冪排序）`);
               if(allResults.length)btnExport.style.display="inline-block";
-              setRandomBg();
-              maybeShowEasterEgg();
               continue;
             }
             if(data.error){setStatus("錯誤："+data.error);setLoading(false);continue;}
             if(data.total){totalWords=data.total;setStatus(`查詢中… 0 / ${totalWords} 個詞`);continue;}
-            allResults.push(data);tableWrap.style.display="block";addRow(data);
+            allResults.push(data);
+            bumpProgress(stagePct(allResults.length,totalWords,offset,span));
             setStatus(totalWords?`查詢中… ${allResults.length} 筆（約 ${totalWords} 個詞）`:`查詢中… ${allResults.length} 筆`);
           }
         }
@@ -1321,6 +1464,13 @@ HTML = r"""<!DOCTYPE html>
       }finally{
         es=null;
       }
+    }
+    async function doSearch(){
+      let raw=input.value.trim();if(!raw){input.focus();return;}
+      if(bpmfMode) raw=bpmfConvert(raw);
+      segmentLine.style.display="none";segmentLine.innerHTML="";
+      resetProgress();
+      await runWordSearch(raw,{offset:0,span:100});
     }
     btnSearch.addEventListener("click",doSearch);
     input.addEventListener("keydown",e=>{if(e.key==="Enter")doSearch();});
@@ -1342,6 +1492,9 @@ HTML = r"""<!DOCTYPE html>
       const text=pasteText.value.trim(),file=fileInput.files[0];
       if(!text&&!file){pasteText.focus();return;}
       btnSegment.disabled=true;setLoading(true);setStatus("斷詞中…（長文會分段處理，請稍候）");
+      segmentLine.style.display="none";segmentLine.innerHTML="";
+      tbody.innerHTML="";allResults=[];tableWrap.style.display="none";btnExport.style.display="none";
+      resetProgress();
       try{
         const fd=new FormData();
         if(file) fd.append("file",file); else fd.append("text",text);
@@ -1362,24 +1515,78 @@ HTML = r"""<!DOCTYPE html>
             const data=JSON.parse(line.slice(6));
             if(data.error){errMsg=data.error;}
             else if(data.done){words=data.words;}
-            else if(data.progress!==undefined){setStatus(`斷詞中… 第 ${data.progress}/${data.total} 段，已找到 ${data.words_so_far} 個詞`);}
-            else if(data.stage==="word_check"){setStatus(`查核多字詞是否為辭典詞條中… ${data.done}/${data.total}`);}
-            else if(data.stage==="pair_check"){setStatus(`第 ${data.round} 輪前後字配對中… ${data.done}/${data.total}`);}
-            else if(data.stage==="def_check"){setStatus(`確認剩餘單字是否有定義中… ${data.done}/${data.total}`);}
+            else if(data.progress!==undefined){bumpProgress(stagePct(data.progress,data.total,0,25));setStatus(`斷詞中… 第 ${data.progress}/${data.total} 段，已找到 ${data.words_so_far} 個詞`);}
+            else if(data.stage==="word_check"){bumpProgress(stagePct(data.done,data.total,25,10));setStatus(`查核多字詞是否為辭典詞條中… ${data.done}/${data.total}`);}
+            else if(data.stage==="pair_check"){bumpProgress(stagePct(data.done,data.total,35,25));setStatus(`第 ${data.round} 輪前後字配對中… ${data.done}/${data.total}`);}
+            else if(data.stage==="def_check"){bumpProgress(stagePct(data.done,data.total,60,10));setStatus(`確認剩餘單字是否有定義中… ${data.done}/${data.total}`);}
           }
         }
 
         if(errMsg){setStatus("斷詞失敗："+errMsg);setLoading(false);return;}
         if(!words){setStatus("斷詞失敗：連線中斷");setLoading(false);return;}
+        // 分詞結果獨立顯示一條在表格上面，不塞進上面單字查詢的輸入框
+        segmentLine.innerHTML=`<span class="seg-label">斷詞結果（${words.length} 個詞）</span>`+
+          words.map(w=>`<span class="seg-word">${w}</span>`).join("");
+        segmentLine.style.display="block";
         setStatus(`斷詞完成，共 ${words.length} 個詞，查詢中…`);
-        input.value=words.join("，");
-        doSearch();
+        bumpProgress(70);
+        await runWordSearch(words.join("，"),{offset:70,span:30});
       }catch(err){
         setStatus("斷詞失敗："+err.message);setLoading(false);
       }finally{
         btnSegment.disabled=false;
       }
     });
+
+    // ── 主 logo 選單 ──────────────────────────────────────────────────
+    const logoMenu=document.getElementById("logo-menu"),logoDropdown=document.getElementById("logo-dropdown"),
+          siteLogo=document.getElementById("site-logo");
+    const openDropdown=()=>logoDropdown.classList.add("show");
+    const closeDropdown=()=>logoDropdown.classList.remove("show");
+    let ddHoverTimer=null;
+    logoMenu.addEventListener("mouseenter",()=>{clearTimeout(ddHoverTimer);openDropdown();});
+    logoMenu.addEventListener("mouseleave",()=>{ddHoverTimer=setTimeout(closeDropdown,200);});
+    // 只負責「打開」，不做 toggle：滑鼠靠近時 mouseenter 已經先開了，
+    // 緊接著的 click 若做 toggle 反而會把剛打開的選單關掉，變成要點兩次。
+    siteLogo.addEventListener("click",openDropdown);
+    document.addEventListener("click",e=>{if(!logoMenu.contains(e.target))closeDropdown();});
+    document.getElementById("dd-relax").addEventListener("click",closeDropdown);
+
+    // 新手教學：跑一次示範查詢，結果停留 30 秒後自動清除（除非使用者這段
+    // 時間內自己又查了別的，那就不要動使用者真正的查詢結果）。
+    const DEMO_WORDS="快樂,朋友,學校,老師,電腦";
+    document.getElementById("dd-tutorial").addEventListener("click",async()=>{
+      closeDropdown();
+      input.value=DEMO_WORDS;
+      await doSearch();
+      const myGen=searchGen;
+      setTimeout(()=>{
+        if(searchGen!==myGen)return;
+        input.value="";tbody.innerHTML="";allResults=[];tableWrap.style.display="none";
+        btnExport.style.display="none";segmentLine.style.display="none";segmentLine.innerHTML="";
+        setStatus("");
+      },30000);
+    });
+
+    // 網站做太差？：全螢幕吐槽狗照片，按任意鍵（或點擊）關閉
+    const roastOverlay=document.getElementById("roast-overlay");
+    const closeRoast=()=>{roastOverlay.classList.remove("show");document.removeEventListener("keydown",closeRoast);};
+    document.getElementById("dd-roast").addEventListener("click",()=>{
+      closeDropdown();
+      roastOverlay.classList.add("show");
+      document.addEventListener("keydown",closeRoast);
+    });
+    roastOverlay.addEventListener("click",closeRoast);
+
+    // 網站成員
+    const creditsOverlay=document.getElementById("credits-overlay");
+    const closeCredits=()=>{creditsOverlay.classList.remove("show");document.removeEventListener("keydown",closeCredits);};
+    document.getElementById("dd-credits").addEventListener("click",()=>{
+      closeDropdown();
+      creditsOverlay.classList.add("show");
+      document.addEventListener("keydown",closeCredits);
+    });
+    creditsOverlay.addEventListener("click",closeCredits);
   </script>
 </body>
 </html>"""
@@ -1388,10 +1595,15 @@ HTML = r"""<!DOCTYPE html>
 def index():
     return render_template_string(HTML.replace("__DEFAULT_OUTPUT__", str(DEFAULT_OUTPUT)))
 
-@app.route("/egg/<int:n>")
-def easter_egg(n):
-    """小彩蛋圖片，查詢完成時前端低機率隨機跳出一張。"""
-    return send_from_directory(EASTER_EGG_DIR, f"{n}.jpg")
+@app.route("/mascot/<name>")
+def mascot(name):
+    """查詢中在進度條下面放的粉兔子吉祥物（bunny_typing_00~07.png 逐格切換）。"""
+    return send_from_directory(MASCOT_DIR, name)
+
+@app.route("/branding/<name>")
+def branding(name):
+    """主 logo、「網站做太差？」全螢幕彩蛋用的狗照片等站內視覺素材。"""
+    return send_from_directory(BRANDING_DIR, name)
 
 SEARCH_WORKERS = 10  # 併發查詢數：詞典查詢是網路 I/O，開多執行緒平行打才不會單詞逐一排隊
 

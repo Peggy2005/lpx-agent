@@ -30,7 +30,8 @@ jobs:
         run: >
           pyinstaller --onefile --windowed --name "分詞辭典" --icon dictionary.ico
           --add-data "vocab_14452.xlsx;."
-          --add-data "easter_eggs;easter_eggs"
+          --add-data "mascot;mascot"
+          --add-data "branding;branding"
           --hidden-import docx --hidden-import pypdf
           CNdictionary.py
 
