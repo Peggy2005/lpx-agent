@@ -1,4 +1,4 @@
-name: Build 分詞辭典 exe
+name: Build 國文辭典查詢工具 exe
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
 
       - name: Build exe
         run: >
-          pyinstaller --onefile --windowed --name "分詞辭典" --icon dictionary.ico
+          pyinstaller --onefile --windowed --name "國文辭典查詢工具" --icon dictionary.ico
           --add-data "${{ env.PW_LOCAL }};playwright/driver/package/.local-browsers"
           --add-data "vocab_14452.xlsx;."
           --add-data "synonyms.json;."
@@ -51,5 +51,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: 分詞辭典-exe
-          path: cc/scripts/dict-tool/dist/分詞辭典.exe
+          name: 國文辭典查詢工具-exe
+          path: cc/scripts/dict-tool/dist/國文辭典查詢工具.exe
