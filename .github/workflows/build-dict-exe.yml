@@ -24,15 +24,29 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller pillow flask requests beautifulsoup4 openpyxl python-docx pypdf
+          pip install pyinstaller pillow flask requests beautifulsoup4 openpyxl python-docx pypdf playwright imageio-ffmpeg
+
+      # 筆順動畫錄影用系統的 Chrome／Edge，但 Playwright 錄影還需要它自己的 ffmpeg 元件；
+      # 裝進套件資料夾（PLAYWRIGHT_BROWSERS_PATH=0，打包後的 exe 也是找這裡）再一起打包
+      - name: Bundle Playwright ffmpeg
+        shell: pwsh
+        run: |
+          $env:PLAYWRIGHT_BROWSERS_PATH = "0"
+          python -m playwright install ffmpeg
+          $pw = python -c "import playwright, os; print(os.path.dirname(playwright.__file__))"
+          Get-ChildItem "$pw\driver\package\.local-browsers"
+          "PW_LOCAL=$pw\driver\package\.local-browsers" >> $env:GITHUB_ENV
 
       - name: Build exe
         run: >
           pyinstaller --onefile --windowed --name "分詞辭典" --icon dictionary.ico
+          --add-data "${{ env.PW_LOCAL }};playwright/driver/package/.local-browsers"
           --add-data "vocab_14452.xlsx;."
+          --add-data "synonyms.json;."
           --add-data "mascot;mascot"
           --add-data "branding;branding"
           --hidden-import docx --hidden-import pypdf
+          --collect-all playwright --collect-all imageio_ffmpeg
           CNdictionary.py
 
       - uses: actions/upload-artifact@v4
