@@ -777,7 +777,8 @@ HTML = r"""<!DOCTYPE html>
       transition: opacity .15s, transform .1s; white-space: nowrap;
     }
     button:active { transform: scale(.97); }
-    button:disabled { opacity: .45; cursor: not-allowed; }
+    button:disabled, button.busy { opacity: .45; cursor: not-allowed; }
+    button.busy:active { transform: none; }
     #btn-search { background: #4f80ff; color: #fff; }
     #btn-search:hover:not(:disabled) { background: #3b6ef0; }
     #btn-export { background: #1a3a2a; color: #4ade80; border: 1px solid #166534; display: none; }
@@ -954,6 +955,8 @@ HTML = r"""<!DOCTYPE html>
       /* 桌子、螢幕貼著原圖的下緣和左緣，整張圖往四周淡出，避免被切出一條硬邊 */
       -webkit-mask-image: radial-gradient(circle at 55% 45%, #000 50%, transparent 71%);
       mask-image: radial-gradient(circle at 55% 45%, #000 50%, transparent 71%); }
+    .fullscreen-overlay img.impatient-img { max-width: min(90vw, 860px); max-height: 72vh; border-radius: 10px;
+                                             box-shadow: 0 12px 36px rgba(0,0,0,.6); }
     .fullscreen-overlay img.thanks-img { width: min(60vw, 300px); height: auto; }
     /* 人物貼著原圖下緣，下方淡出，避免被切出一條硬邊 */
     .fullscreen-overlay img.why-img { -webkit-mask-image: linear-gradient(to top, transparent, #000 22%);
@@ -1025,6 +1028,10 @@ HTML = r"""<!DOCTYPE html>
     <div class="roast-caption">你是好人，給你看狗狗</div>
     <div class="roast-hint">按任意鍵關閉</div>
   </div>
+  <div class="fullscreen-overlay" id="impatient-overlay">
+    <img id="impatient-img" class="impatient-img" src="/branding/impatient.jpg" alt="你的性子也太急了">
+    <div class="roast-hint">按任意鍵關閉</div>
+  </div>
   <div class="fullscreen-overlay" id="meteor-overlay">
     <img id="meteor-img" class="thanks-img" src="/mascot/meteor_00.png" alt="">
     <div class="roast-caption">忘記切換鍵盤了齁</div>
@@ -1069,11 +1076,11 @@ HTML = r"""<!DOCTYPE html>
       <div class="credits-title">作者頁</div>
       <div class="credits-row">
         <span class="credits-name">林錦崧</span>
-        <span class="credits-role">銘傳大學華語文教學學系 · 分詞語法邏輯設計</span>
+        <span class="credits-role">銘傳大學華語文教學學系 · 分詞語法邏輯設計（載入中的文案是他寫的）</span>
       </div>
       <div class="credits-row">
         <span class="credits-name">林佩萱</span>
-        <span class="credits-role">國立中興大學電機工程學系 · 開發</span>
+        <span class="credits-role">國立中興大學電機工程學系 · 網頁開發</span>
       </div>
       <p class="credits-note">
         這是我們的專題題目，做得倉促的地方應該不少，如果你發現什麼奇怪的、覺得可以改進的部分，
@@ -1734,8 +1741,28 @@ HTML = r"""<!DOCTYPE html>
       progressPct.textContent=Math.round(progressMax)+"%";
     };
     const stagePct=(done,total,offset,span)=>offset+(total?Math.min(1,done/total):0)*span;
+    // 查詢類按鈕送出中：只變灰、不設 disabled——disabled 的按鈕瀏覽器直接吞掉點擊，
+    // 就數不到「連按三次」；重複送出改由 querySubmit 檢查 busy 擋掉
+    const setBusy=(btn,on)=>{btn.classList.toggle("busy",on);btn.setAttribute("aria-disabled",on?"true":"false");};
+    const isBusy=btn=>btn.classList.contains("busy");
+    // 查詢類按鈕／輸入框 Enter 共用：送出中再按不重送（防呆）；1.5 秒內連按 3 次跳「你的性子也太急了」。
+    // Enter 只算真正按下的那一次：按住不放的自動重複、注音輸入法選字中的 Enter 都不算、也不送出。
+    // 另外送出後 1.5 秒內同一個按鈕不再送：查詢很快（例如查過的詞有快取）時，
+    // 第一次早就跑完、按鈕已不在忙碌中，光看 busy 擋不住連按造成的重複送出。
+    const RAPID_MS=1500,rapidHits={},lastSent={};
+    function querySubmit(key,btn,run){
+      return e=>{
+        if(e&&e.type==="keydown"&&(e.key!=="Enter"||e.repeat||e.isComposing||e.keyCode===229))return;
+        const now=Date.now(),hits=(rapidHits[key]||[]).filter(t=>now-t<RAPID_MS);
+        hits.push(now);rapidHits[key]=hits;
+        if(hits.length>=3){rapidHits[key]=[];showImpatient();}
+        if(isBusy(btn)||now-(lastSent[key]||0)<RAPID_MS)return;
+        lastSent[key]=now;
+        run();
+      };
+    }
     const setLoading=on=>{
-      spinner.style.display=on?"block":"none";btnSearch.disabled=on;
+      spinner.style.display=on?"block":"none";setBusy(btnSearch,on);
       excludeInput.disabled=on;
       progressWrap.style.display=on?"flex":"none";
       if(on){startJokes();startMascot();} else {stopJokes();stopMascot();}
@@ -1846,8 +1873,8 @@ HTML = r"""<!DOCTYPE html>
       resetProgress();
       await runWordSearch(raw,{offset:0,span:100});
     }
-    btnSearch.addEventListener("click",doSearch);
-    input.addEventListener("keydown",e=>{if(e.key==="Enter")doSearch();});
+    btnSearch.addEventListener("click",querySubmit("search",btnSearch,doSearch));
+    input.addEventListener("keydown",querySubmit("search",btnSearch,doSearch));
     btnExport.addEventListener("click",async()=>{
       btnExport.disabled=true;
       try{
@@ -1892,10 +1919,10 @@ HTML = r"""<!DOCTYPE html>
         report("檔案讀取失敗："+err.message);
       }
     }
-    btnSegment.addEventListener("click",async()=>{
+    const segmentRun=async()=>{
       const text=pasteText.value.trim();
       if(!text){pasteText.focus();setStatus("請貼上文字，或把檔案拖進視窗");return;}
-      btnSegment.disabled=true;setLoading(true);setStatus("斷詞中…（長文會分段處理，請稍候）");
+      setBusy(btnSegment,true);setLoading(true);setStatus("斷詞中…（長文會分段處理，請稍候）");
       segmentLine.style.display="none";segmentLine.innerHTML="";
       tbody.innerHTML="";allResults=[];tableWrap.style.display="none";btnExport.style.display="none";
       resetProgress();
@@ -1938,9 +1965,10 @@ HTML = r"""<!DOCTYPE html>
       }catch(err){
         setStatus("斷詞失敗："+err.message);setLoading(false);
       }finally{
-        btnSegment.disabled=false;
+        setBusy(btnSegment,false);
       }
-    });
+    };
+    btnSegment.addEventListener("click",querySubmit("segment",btnSegment,segmentRun));
 
     // ── 分頁：查詞表格／近義詞替換 ──────────────────────────────────────
     // 兩頁共用同一條進度條＋吉祥物，切頁時把它搬到該頁的 progress-slot。
@@ -2033,7 +2061,7 @@ HTML = r"""<!DOCTYPE html>
       const text=rwText.value.slice(start,end);
       if(!text.trim()){rwStatus.textContent="請先在文本中用滑鼠選取一段文字";rwText.focus();return;}
       rwRange={start,end,text};
-      btnRwSeg.disabled=true;rwTokens=[];rwActive=-1;
+      setBusy(btnRwSeg,true);rwTokens=[];rwActive=-1;
       rwWork.style.display="none";rwPanel.style.display="none";rwCompare.style.display="none";
       resetProgress();setLoading(true);rwStatus.textContent=`斷詞中…（選取 ${text.length} 字）`;
       try{
@@ -2069,10 +2097,10 @@ HTML = r"""<!DOCTYPE html>
       }catch(err){
         rwStatus.textContent="斷詞失敗："+err.message;
       }finally{
-        setLoading(false);btnRwSeg.disabled=false;
+        setLoading(false);setBusy(btnRwSeg,false);
       }
     }
-    btnRwSeg.addEventListener("click",rwSegment);
+    btnRwSeg.addEventListener("click",querySubmit("rewrite",btnRwSeg,rwSegment));
     document.getElementById("btn-rw-reset").addEventListener("click",()=>{
       rwTokens.forEach(t=>{t.cur=t.text;t.curLevel=t.level;});
       if(rwActive>=0) rwOpen(rwActive); else rwRender();
@@ -2189,7 +2217,7 @@ HTML = r"""<!DOCTYPE html>
     async function hwLookup(){
       const text=hwInput.value.trim();
       if(!text){hwInput.focus();return;}
-      btnHw.disabled=true;hwGrid.innerHTML="";hwZipbar.style.display="none";
+      setBusy(btnHw,true);hwGrid.innerHTML="";hwZipbar.style.display="none";
       resetProgress();setLoading(true);hwStatus.textContent="查詢教育部筆順資料中…";
       try{
         const data=await (await fetch("/moe-stroke?text="+encodeURIComponent(text))).json();
@@ -2208,7 +2236,7 @@ HTML = r"""<!DOCTYPE html>
       }catch(err){
         hwStatus.textContent="查詢失敗："+err.message;
       }finally{
-        setLoading(false);btnHw.disabled=false;
+        setLoading(false);setBusy(btnHw,false);
       }
     }
     const IS_IOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
@@ -2251,7 +2279,7 @@ HTML = r"""<!DOCTYPE html>
     btnHwZip.addEventListener("click",async()=>{
       if(!hwFound.length)return;
       const label=btnHwZip.textContent,chars=hwFound.map(c=>c.char).join("");
-      btnHwZip.disabled=true;btnHw.disabled=true;
+      btnHwZip.disabled=true;setBusy(btnHw,true);
       resetProgress();setLoading(true);hwStatus.textContent=`錄製中… 0 / ${hwFound.length} 個字`;
       try{
         const fd=new FormData();fd.append("items",JSON.stringify(hwFound.map(c=>({id:c.id,char:c.char}))));
@@ -2284,11 +2312,11 @@ HTML = r"""<!DOCTYPE html>
       }catch(err){
         hwStatus.textContent="打包失敗："+err.message;
       }finally{
-        setLoading(false);btnHwZip.disabled=false;btnHw.disabled=false;btnHwZip.textContent=label;
+        setLoading(false);btnHwZip.disabled=false;setBusy(btnHw,false);btnHwZip.textContent=label;
       }
     });
-    btnHw.addEventListener("click",hwLookup);
-    hwInput.addEventListener("keydown",e=>{if(e.key==="Enter")hwLookup();});
+    btnHw.addEventListener("click",querySubmit("stroke",btnHw,hwLookup));
+    hwInput.addEventListener("keydown",querySubmit("stroke",btnHw,hwLookup));
 
     // ── 主 logo 選單 ──────────────────────────────────────────────────
     const logoMenu=document.getElementById("logo-menu"),logoDropdown=document.getElementById("logo-dropdown"),
@@ -2321,25 +2349,25 @@ HTML = r"""<!DOCTYPE html>
     }
     const TOURS={
       lookup:[
-        {text:"這是「查詢表格」頁：輸入詞彙或整篇文章，查出每個詞的音標、詞類、意思和詞彙等級，還能下載 Excel。",
+        {text:"這是「查詢表格」頁：輸入詞彙或貼上整篇文章，系統將會查出每個詞的漢拼、詞類、意思和詞彙等級（國教院華語文語料庫），另外也可以做成Excel檔！",
          run:async()=>showPage("lookup")},
-        {el:"#words-input",text:"① 在這裡輸入要查的詞，好幾個詞用空白、逗號或頓號隔開。",
+        {el:"#words-input",text:"① 在這裡輸入要查的詞，詞與詞之間可以用空白、頓號、逗號隔開𖦹' ‐ '𖦹",
          run:()=>typeInto(input,"快樂，朋友，學校")},
         {el:"#btn-bpmf",text:"② 不方便打中文？按「⌨ 注音」可以用大千式注音鍵盤輸入，例如打 jau3 會變成「找」。"},
         {el:"#btn-search",text:"③ 按「查詢」（或 Enter）開始查。",run:()=>doSearch(),after:"#table-wrap"},
-        {el:"#table-wrap",text:"④ 結果表格：漢字詞彙、音標、詞類、意思、詞彙等級。依等級由高到低排，查無資料的排最上面。"},
+        {el:"#table-wrap",text:"④ 結果表格：漢字詞彙、音標、詞類、意思、詞彙等級。依詞彙等級由高至低降冪排序，查無資料的會在最上面- ̗̀( ˶^ᵕ'˶)b"},
         {el:"#btn-export",text:"⑤ 按「下載 Excel」，整張表會存成「查詢結果.xlsx」。"},
-        {el:"#paste-text",text:"⑥ 整篇文章也可以查：把文字貼進這個框。",
+        {el:"#paste-text",text:"⑥ 整篇文章也可以查噢！把文字貼進框框就好ʕ•ﻌ•ʔฅ",
          run:async()=>{pasteText.value="";await typeInto(pasteText,"今天天氣很好。");}},
         {el:"#paste-text",text:"⑦ 或是把 txt／docx／pdf 檔直接拖進視窗，文字會自動放進框裡。現在示範拖入一個 PDF：",
          run:()=>dropDemoPdf(pasteText,setStatus,lookupFile),after:"#lookup-file"},
-        {el:"#exclude-input",text:"⑧ 不想查的詞（例如作者名、標題）填在「排除詞」，用逗號隔開。"},
-        {el:"#btn-segment",text:"⑨ 按「斷詞並查詢」：先用國教院系統斷詞，再自動查每個詞。文章越長越久，進度條和兔子會陪你等。",
-         run:async()=>{btnSegment.click();await sleep(300);await waitUntil(()=>!btnSegment.disabled);},after:"#segment-line"},
+        {el:"#exclude-input",text:"⑧ 不想查的詞（例如作者名、標題）填在「排除詞」欄位，用逗號隔開。"},
+        {el:"#btn-segment",text:"⑨ 按「斷詞並查詢」後，系統會先根據國教院語料庫的資料庫斷詞，再自動查詢，文章越長查詢的時間越久，請耐心等待(🍁•᎑•🍁)",
+         run:async()=>{btnSegment.click();await sleep(300);await waitUntil(()=>!isBusy(btnSegment));},after:"#segment-line"},
         {el:"#segment-line",text:"⑩ 這一排是斷出來的詞，下面表格是每個詞的查詢結果，一樣可以下載 Excel。教學結束！"},
       ],
       rewrite:[
-        {text:"這是「近義詞替換」頁：選一段文字，把裡面的詞換成近義詞（教育部相似詞），改完輸出改寫句和詞表。",
+        {text:"這是「近義詞替換」頁：選一段文字，把裡面的詞換成近義詞，改完後會輸出替換後的句子及詞表。",
          run:async()=>showPage("rewrite")},
         {el:"#rw-text",text:"① 把文章貼進文本框，或把 txt／docx／pdf 檔直接拖進視窗。現在示範拖入一個 PDF：",
          run:async()=>{rwText.value="";await dropDemoPdf(rwText,rwReport,rwFile);},after:"#rw-file"},
@@ -2347,32 +2375,32 @@ HTML = r"""<!DOCTYPE html>
          run:async()=>{const t="小明覺得很快樂，也很感謝朋友的陪伴。",i=rwText.value.indexOf(t);
                        rwText.focus();if(i>=0)rwText.setSelectionRange(i,i+t.length);}},
         {el:"#btn-rw-seg",text:"③ 按「近義詞替換」，選到的這段會照原本的順序斷詞。",run:()=>rwSegment(),after:"#rw-tokens"},
-        {el:"#rw-tokens",text:"④ 藍框的詞有近義詞。點一下會列出所有近義詞和詞彙等級（由低到高）。示範點「快樂」：",
+        {el:"#rw-tokens",text:"④ 藍框的詞代表有近義詞可以替換。點一下會列出相關近義詞和詞彙等級（等級由低到高排序）。示範點「快樂」：",
          run:async()=>{let i=rwTokens.findIndex(t=>t.text==="快樂"&&t.has_syn);if(i<0)i=rwTokens.findIndex(t=>t.has_syn);
                        if(i>=0)await rwOpen(i);},after:"#rw-panel"},
         {el:"#rw-syns",text:"⑤ 點一個近義詞就換上去，換過的詞會變黃框。示範換成「高興」：",
          run:async()=>{const bs=[...rwSyns.querySelectorAll(".rw-syn")];
                        const b=bs.find(x=>x.textContent.startsWith("高興"))||bs[1];if(b)b.click();await sleep(500);},
          after:"#rw-compare"},
-        {el:"#rw-compare",text:"⑥ 這裡即時對照原句和改寫句：紅色是換掉的、黃色是換上的。不滿意可以按「全部還原」。"},
-        {el:"#btn-rw-confirm",text:"⑦ 改好按「確認替換」：改寫句會寫回文本，下面產生一張結果卡。",
+        {el:"#rw-compare",text:"⑥ 這裡將會對照原句和改寫句：紅色是被替換掉的、黃色是替換過後的。不滿意可以按「全部還原」。"},
+        {el:"#btn-rw-confirm",text:"⑦ 改好按「確認替換」：改寫句會覆寫回文本。",
          run:async()=>{document.getElementById("btn-rw-confirm").click();await sleep(400);},after:".rw-result .rw-copy-row"},
-        {el:".rw-result .rw-copy-row",text:"⑧ 原句、改寫句旁邊都有「複製」按鈕，按一下就能貼到講義裡。"},
-        {el:".rw-result .rw-ask",text:"⑨ 接著會問「是否輸出這句的詞表」（按「不用」會發生什麼，自己試試看😏）。示範按「輸出詞表」：",
+        {el:".rw-result .rw-copy-row",text:"⑧ 原句、改寫句旁邊都有「複製」按鈕，按一下即可複製。"},
+        {el:".rw-result .rw-ask",text:"⑨ 接著會問「是否輸出這句的詞表」。示範按「輸出詞表」：",
          run:async()=>{const card=document.querySelector(".rw-result");card.querySelector('[data-ask="yes"]').click();
                        await sleep(300);await waitUntil(()=>card.querySelector(".rw-table-slot table")||/失敗/.test(card.textContent));},
          after:".rw-result .rw-table-slot"},
         {el:".rw-result .rw-table-slot",text:"⑩ 這句所有的詞都查好了，格式跟「查詢表格」頁一樣，也能下載 Excel。教學結束！"},
       ],
       handwriting:[
-        {text:"這是「筆順動畫」頁：顯示教育部官方的標準筆順動畫，還能把筆順錄成影片下載，拿來編教材。",
+        {text:"這是「筆順動畫」頁：會顯示教育部官方的標準筆順動畫，還能把筆順錄成影片下載。",
          run:async()=>showPage("handwriting")},
         {el:"#hw-input",text:"① 輸入一個字或一段話（最多 20 字，標點會自動略過）。",run:()=>typeInto(hwInput,"永學")},
-        {el:"#btn-hw",text:"② 按「查筆順」，每個字都會出現教育部官方的筆順動畫（教育部網站比較慢，約 5 秒）。",
+        {el:"#btn-hw",text:"② 按「查筆順」，每個字都會出現教育部官方的筆順動畫。",
          run:()=>hwLookup(),after:"#hw-grid"},
         {el:".hw-cell",text:"③ 動畫下方的按鈕可以暫停、逐筆播放、切換快中慢；上方「筆順練習」可以自己描寫看看。"},
-        {el:".hw-cell .hw-dl",text:"④ 「下載白底 MP4」把這個字的筆順錄成影片：白底、字放大，放進投影片就像去背。第一次每個字約 5–20 秒。"},
-        {el:"#btn-hw-zip",text:"⑤ 好幾個字時，按「全部下載 .zip」一次打包所有字的影片（下載完有驚喜）。教學結束！"},
+        {el:".hw-cell .hw-dl",text:"④ 點選「下載白底 MP4」會把這個字的筆順錄成影片。"},
+        {el:"#btn-hw-zip",text:"⑤ 當下載兩個及以上動畫時，按「全部下載 .zip」會一次打包所有的動畫（下載完有驚喜）。教學結束！"},
       ],
     };
     let tour=null;
@@ -2451,6 +2479,9 @@ HTML = r"""<!DOCTYPE html>
     const framesOf=(name,n)=>Array.from({length:n},(_,i)=>`/mascot/${name}_${String(i).padStart(2,"0")}.png`);
     const showOkFine=makeAnimOverlay(document.getElementById("okfine-overlay"),document.getElementById("okfine-img"),
                                      framesOf("okfine",12),50);
+    // 查詢類按鈕（或 Enter）連按三次：「你的性子也太急了」
+    const showImpatient=makeAnimOverlay(document.getElementById("impatient-overlay"),
+                                        document.getElementById("impatient-img"),["/branding/impatient.jpg"],60000);
     // 查詢表格頁打開「⌨ 注音」模式：「忘記切換鍵盤了齁」
     const showMeteor=makeAnimOverlay(document.getElementById("meteor-overlay"),document.getElementById("meteor-img"),
                                      framesOf("meteor",15),80);

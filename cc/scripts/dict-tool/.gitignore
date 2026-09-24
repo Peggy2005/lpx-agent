@@ -1,0 +1,8 @@
+# 一鍵打包時 `git add` 整個 dict-tool 資料夾，這些不要跟著進 repo
+.trash-*
+.claude-flow/
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
