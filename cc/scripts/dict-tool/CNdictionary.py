@@ -43,6 +43,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ── 設定 ─────────────────────────────────────────────────────────────
 PORT = 5000
+APP_VERSION = "1.1.0"
 
 BASE = "https://dict.concised.moe.edu.tw"
 MOEDICT_URL = "https://www.moedict.tw/a/{word}.json"
@@ -925,7 +926,40 @@ HTML = r"""<!DOCTYPE html>
                      padding: 10px 14px; font-size: .85rem; overflow-x: auto; white-space: nowrap; }
     .segment-line .seg-label { color: #7dd3fc; font-weight: 600; margin-right: 8px; white-space: nowrap; }
     .segment-line .seg-word { display: inline-block; background: #232b40; color: #cbd5e1;
-                               border-radius: 5px; padding: 2px 8px; margin-right: 6px; font-size: .82rem; }
+                               border-radius: 5px; padding: 2px 8px; margin-right: 6px; font-size: .82rem;
+                               cursor: pointer; transition: background .15s; }
+    .segment-line .seg-word:hover { background: #2d3a5a; }
+    .segment-line .seg-word.on { background: #2563eb; color: #fff; }
+    .rw-result .segment-line { display: block; max-width: none; }
+    /* 顯示用表格上方的篩選列：全部顯示／各詞彙等級，點斷詞時多一個「只顯示某詞」標籤 */
+    .result-filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+                      padding: 10px 12px; background: #161b27; border-bottom: 1px solid #2d3548; }
+    .result-filter button { font-size: .78rem; font-weight: 600; padding: 4px 11px; border-radius: 999px;
+                             background: #1a2030; color: #cbd5e1; border: 1px solid #2d3548; }
+    .result-filter button:hover { background: #232b40; }
+    .result-filter button.on { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .result-filter .rf-word { margin-left: auto; font-size: .8rem; color: #7dd3fc; }
+    .result-filter .rf-word button { margin-left: 6px; padding: 2px 9px; }
+    td .more-btn { display: block; margin-top: 6px; font-size: .75rem; font-weight: 600; padding: 3px 10px;
+                    background: #1e3a5f; color: #7dd3fc; border: 1px solid #2563eb; border-radius: 6px; }
+    td .more-btn:hover { background: #24497a; }
+    td.more-sum { color: #64748b; font-size: .85rem; }
+    tbody tr.more-row, tbody tr.more-row:nth-child(even) { background: #141926; }
+    tbody tr.more-row td.word { color: #94a3b8; font-weight: 600; padding-left: 28px; }
+    td.rf-empty { text-align: center; color: #64748b; padding: 22px; }
+    /* 第一次打開的完整教學：右上角一鍵跳過 */
+    .tour-skip { position: fixed; top: 16px; right: 18px; z-index: 850; display: none;
+                  background: #1e2330; color: #fbbf24; border: 1px solid #fbbf24; padding: 8px 16px;
+                  font-size: .85rem; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+    .tour-skip.show { display: block; }
+    .tour-arrow { position: fixed; z-index: 850; display: none; font-size: 2.6rem; line-height: 1;
+                   color: #fbbf24; text-shadow: 0 0 14px rgba(251,191,36,.6); pointer-events: none;
+                   animation: arrowNudge .9s ease-in-out infinite; }
+    .tour-arrow.show { display: block; }
+    @keyframes arrowNudge { 0%,100% { transform: translateY(0); } 50% { transform: translateY(10px); } }
+    .tour-skip:hover { background: #2a2410; }
+    .fullscreen-overlay img.skip-img { width: min(80vw, 520px); max-height: none; height: auto;
+                                        image-rendering: auto; border-radius: 10px; }
     .header-row { display: flex; align-items: flex-start; gap: 18px; margin-bottom: 22px; }
     .logo-menu { position: relative; }
     .site-logo { height: 88px; width: auto; display: block; cursor: pointer;
@@ -1050,6 +1084,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="tour-pick" id="tour-pick">
     <div class="tour-pick-box">
       <div class="tour-pick-title">你想要知道關於</div>
+      <button data-tour="all">全部功能</button>
       <button data-tour="lookup">查詢表格</button>
       <button data-tour="rewrite">近義詞替換</button>
       <button data-tour="handwriting">筆順動畫</button>
@@ -1060,6 +1095,13 @@ HTML = r"""<!DOCTYPE html>
     <div class="tour-step" id="tour-step"></div>
     <div class="tour-text" id="tour-text"></div>
     <div class="tour-hint" id="tour-hint"></div>
+  </div>
+  <button class="tour-skip" id="tour-skip">一鍵跳過教學 ⏭</button>
+  <div class="tour-arrow" id="tour-arrow">⬆</div>
+  <div class="fullscreen-overlay" id="skip-overlay">
+    <img id="skip-img" class="skip-img" src="/branding/skip-okay.gif" alt="">
+    <div class="roast-caption">好吧</div>
+    <div class="roast-hint">按任意鍵關閉</div>
   </div>
   <div class="fullscreen-overlay" id="okfine-overlay">
     <img id="okfine-img" class="okfine-img" src="/mascot/okfine_00.png" alt="">
@@ -1143,6 +1185,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
   <div class="segment-line" id="segment-line"></div>
   <div class="table-wrap" id="table-wrap">
+    <div class="result-filter" id="result-filter"></div>
     <table>
       <thead><tr><th>漢字詞彙</th><th>音標</th><th>詞類</th><th>意思</th><th>詞彙等級</th></tr></thead>
       <tbody id="tbody"></tbody>
@@ -1765,8 +1808,7 @@ HTML = r"""<!DOCTYPE html>
       // 查無資料的排最上面（優先讓使用者看到哪些詞完全沒查到），
       // 其餘照單字級數降冪排序，沒等級資料的（"—"）排最後。
       allResults.sort(byLevelDesc);
-      tbody.innerHTML="";
-      allResults.forEach(addRow);
+      lookupView.set(allResults);
     }
     function byLevelDesc(a,b){
       const aNone=a.pinyin==="查無資料"?1:0,bNone=b.pinyin==="查無資料"?1:0;
@@ -1784,11 +1826,59 @@ HTML = r"""<!DOCTYPE html>
       const pos=entry.pos!=="—"?`<span class="badge">${entry.pos}</span>`:"—";
       return `<td class="word">${entry.word}</td><td class="pin">${entry.pinyin}</td><td class="pos">${pos}</td><td class="def">${entry.definition}</td><td class="lv">${lvTag(entry.level)}</td>`;
     }
-    function addRow(entry){
-      const tr=document.createElement("tr");
-      tr.innerHTML=rowHtml(entry);
-      tbody.appendChild(tr);
+    // ── 顯示用表格（只影響網頁上看到的，下載的 Excel 照樣是全部結果）──
+    // 同一個詞有多筆結果時收成一列「查看更多」；上方篩選列可只看某個詞彙等級；
+    // chips（斷詞結果那一排）點哪個詞就只顯示那個詞，再點一次取消。
+    function makeResultView(tbody,bar,chips){
+      const v={results:[],word:null,level:null,open:new Set()};
+      const lvKey=lv=>lv&&lv!=="—"?lv:"—";
+      // 照排序後第一次出現的順序，把同一個詞的結果收在一起
+      const groups=()=>{
+        const m=new Map();
+        v.results.forEach(e=>{if(!m.has(e.word))m.set(e.word,[]);m.get(e.word).push(e);});
+        return [...m.values()];
+      };
+      function renderBar(all){
+        const counts=new Map();
+        all.forEach(g=>{const k=lvKey(g[0].level);counts.set(k,(counts.get(k)||0)+1);});
+        // 等級由低到高，沒有等級資料的放最後
+        const keys=[...counts.keys()].sort((a,b)=>(a==="—")-(b==="—")||levelRank(a)-levelRank(b));
+        bar.innerHTML=`<button data-lv="" class="${v.level?"":"on"}">全部顯示（${all.length}）</button>`+
+          keys.map(k=>`<button data-lv="${esc(k)}" class="${v.level===k?"on":""}">${k==="—"?"無等級":esc(k)}（${counts.get(k)}）</button>`).join("")+
+          (v.word?`<span class="rf-word">只顯示「${esc(v.word)}」<button data-clear-word>✕ 取消</button></span>`:"");
+      }
+      function render(){
+        const all=groups();
+        renderBar(all);
+        const shown=all.filter(g=>(!v.level||lvKey(g[0].level)===v.level)&&
+                                  (!v.word||g.some(e=>e.word===v.word||e.query===v.word)));
+        tbody.innerHTML=shown.map(g=>{
+          if(g.length===1)return `<tr>${rowHtml(g[0])}</tr>`;
+          const key=esc(g[0].word),open=v.open.has(g[0].word);
+          const head=`<tr><td class="word">${g[0].word}<button class="more-btn" data-more="${key}">${open?"收起 ▴":`查看更多（${g.length} 筆）▾`}</button></td>`+
+                     `<td class="more-sum" colspan="3">${open?"":`這個詞有 ${g.length} 筆結果，點「查看更多」全部列出`}</td><td class="lv">${lvTag(g[0].level)}</td></tr>`;
+          return open?head+g.map(e=>`<tr class="more-row">${rowHtml(e)}</tr>`).join(""):head;
+        }).join("")||`<tr><td class="rf-empty" colspan="5">沒有符合的結果</td></tr>`;
+        if(chips)chips.querySelectorAll(".seg-word").forEach(c=>c.classList.toggle("on",c.dataset.w===v.word));
+      }
+      bar.addEventListener("click",e=>{
+        const b=e.target.closest("button");if(!b)return;
+        if(b.hasAttribute("data-clear-word"))v.word=null;else v.level=b.dataset.lv||null;
+        render();
+      });
+      tbody.addEventListener("click",e=>{
+        const b=e.target.closest("[data-more]");if(!b)return;
+        const w=b.dataset.more;v.open.has(w)?v.open.delete(w):v.open.add(w);
+        render();
+      });
+      if(chips)chips.addEventListener("click",e=>{
+        const c=e.target.closest(".seg-word");if(!c)return;
+        v.word=v.word===c.dataset.w?null:c.dataset.w;
+        render();
+      });
+      return {set(results){v.results=results;v.word=null;v.level=null;v.open.clear();render();}};
     }
+    const lookupView=makeResultView(tbody,document.getElementById("result-filter"),segmentLine);
     btnBpmf.addEventListener("click",()=>{
       bpmfMode=!bpmfMode;
       btnBpmf.classList.toggle("active",bpmfMode);
@@ -1944,8 +2034,8 @@ HTML = r"""<!DOCTYPE html>
         if(errMsg){setStatus("斷詞失敗："+errMsg);setLoading(false);return;}
         if(!words){setStatus("斷詞失敗：連線中斷");setLoading(false);return;}
         // 分詞結果獨立顯示一條在表格上面，不塞進上面單字查詢的輸入框
-        segmentLine.innerHTML=`<span class="seg-label">斷詞結果（${words.length} 個詞）</span>`+
-          words.map(w=>`<span class="seg-word">${w}</span>`).join("");
+        segmentLine.innerHTML=`<span class="seg-label">斷詞結果（${words.length} 個詞，點詞只看那個詞）</span>`+
+          words.map(w=>`<span class="seg-word" data-w="${esc(w)}" title="點一下只顯示這個詞">${esc(w)}</span>`).join("");
         segmentLine.style.display="block";
         setStatus(`斷詞完成，共 ${words.length} 個詞，查詢中…`);
         bumpProgress(70);
@@ -2185,10 +2275,15 @@ HTML = r"""<!DOCTYPE html>
           }finally{
             setLoading(false);
           }
-          slot.innerHTML=`<div class="rw-hint">共 ${rec.results.length} 筆（依單字級數降冪排序）</div><div class="table-wrap"><table>
+          slot.innerHTML=`<div class="rw-hint">共 ${rec.results.length} 筆（依單字級數降冪排序）</div>
+            <div class="segment-line"><span class="seg-label">這句的詞（${rec.words.length} 個，點詞只看那個詞）</span>${
+              rec.words.map(w=>`<span class="seg-word" data-w="${esc(w)}">${esc(w)}</span>`).join("")}</div>
+            <div class="table-wrap"><div class="result-filter"></div><table>
             <thead><tr><th>漢字詞彙</th><th>音標</th><th>詞類</th><th>意思</th><th>詞彙等級</th></tr></thead>
-            <tbody>${rec.results.map(r=>`<tr>${rowHtml(r)}</tr>`).join("")}</tbody></table></div>
+            <tbody></tbody></table></div>
             <div class="rw-actions"><button class="btn-go">下載這句詞表 Excel</button></div>`;
+          makeResultView(slot.querySelector("tbody"),slot.querySelector(".result-filter"),
+                         slot.querySelector(".segment-line")).set(rec.results);
           const dl=slot.querySelector(".btn-go");
           dl.addEventListener("click",()=>rwDownload(rec,dl));
         });
@@ -2343,7 +2438,7 @@ HTML = r"""<!DOCTYPE html>
          run:()=>typeInto(input,"快樂，朋友，學校")},
         {el:"#btn-bpmf",text:"② 不方便打中文？按「⌨ 注音」可以用大千式注音鍵盤輸入，例如打 jau3 會變成「找」。"},
         {el:"#btn-search",text:"③ 按「查詢」（或 Enter）開始查。",run:()=>doSearch(),after:"#table-wrap"},
-        {el:"#table-wrap",text:"④ 結果表格：漢字詞彙、音標、詞類、意思、詞彙等級。依詞彙等級由高至低降冪排序，查無資料的會在最上面- ̗̀( ˶^ᵕ'˶)b"},
+        {el:"#table-wrap",text:"④ 結果表格：漢字詞彙、音標、詞類、意思、詞彙等級。依詞彙等級由高至低降冪排序，查無資料的會在最上面- ̗̀( ˶^ᵕ'˶)b 上方的按鈕可以只看某個詞彙等級；同一個詞有好幾筆結果時會收起來，按「查看更多」才全部列出。"},
         {el:"#btn-export",text:"⑤ 按「下載 Excel」，整張表會存成「查詢結果.xlsx」。"},
         {el:"#paste-text",text:"⑥ 整篇文章也可以查噢！把文字貼進框框就好ʕ•ﻌ•ʔฅ",
          run:async()=>{pasteText.value="";await typeInto(pasteText,"今天天氣很好。");}},
@@ -2352,7 +2447,7 @@ HTML = r"""<!DOCTYPE html>
         {el:"#exclude-input",text:"⑧ 不想查的詞（例如作者名、標題）填在「排除詞」欄位，用逗號隔開。"},
         {el:"#btn-segment",text:"⑨ 按「斷詞並查詢」後，系統會先根據國教院語料庫的資料庫斷詞，再自動查詢，文章越長查詢的時間越久，請耐心等待(🍁•᎑•🍁)",
          run:async()=>{btnSegment.click();await sleep(300);await waitUntil(()=>!isBusy(btnSegment));},after:"#segment-line"},
-        {el:"#segment-line",text:"⑩ 這一排是斷出來的詞，下面表格是每個詞的查詢結果，一樣可以下載 Excel。教學結束！"},
+        {el:"#segment-line",text:"⑩ 這一排是斷出來的詞，點選其中一個詞，下面表格只會顯示那個詞（再點一次取消）。教學結束！"},
       ],
       rewrite:[
         {text:"這是「近義詞替換」頁：選一段文字，把裡面的詞換成近義詞，改完後會輸出替換後的句子及詞表。",
@@ -2378,7 +2473,7 @@ HTML = r"""<!DOCTYPE html>
          run:async()=>{const card=document.querySelector(".rw-result");card.querySelector('[data-ask="yes"]').click();
                        await sleep(300);await waitUntil(()=>card.querySelector(".rw-table-slot table")||/失敗/.test(card.textContent));},
          after:".rw-result .rw-table-slot"},
-        {el:".rw-result .rw-table-slot",text:"⑩ 這句所有的詞都查好了，格式跟「查詢表格」頁一樣，也能下載 Excel。教學結束！"},
+        {el:".rw-result .rw-table-slot",text:"⑩ 這句所有的詞都查好了，跟「查詢表格」頁一樣可以點詞、依等級篩選、查看更多，也能下載 Excel。教學結束！"},
       ],
       handwriting:[
         {text:"這是「筆順動畫」頁：會顯示教育部官方的標準筆順動畫，還能把筆順錄成影片下載。",
@@ -2391,6 +2486,21 @@ HTML = r"""<!DOCTYPE html>
         {el:"#btn-hw-zip",text:"⑤ 當下載兩個及以上動畫時，按「全部下載 .zip」會一次打包所有的動畫（下載完有驚喜）。教學結束！"},
       ],
     };
+    // 「全部功能」：三頁教學接成一串，前兩頁結尾的「教學結束！」改成接下一頁
+    const tourChain=(name,next="接著看下一頁 →")=>TOURS[name].map(s=>({...s,text:s.text.replace("教學結束！",next)}));
+    // 三頁示範完，最後用箭頭指向左上角 logo：其他功能（重看教學、加入我們…）都在 logo 選單裡
+    TOURS.all=[...tourChain("lookup"),...tourChain("rewrite"),...tourChain("handwriting","最後一步 →"),
+      {el:"#site-logo",arrow:"#site-logo",text:"其他問題請點這裡查看更多",run:async()=>{window.scrollTo(0,0);}}];
+    const tourSkip=document.getElementById("tour-skip"),tourArrow=document.getElementById("tour-arrow");
+    // 箭頭放在目標元件正下方、水平置中往上指（右邊是標題，放旁邊會壓到字），捲動或縮放視窗時跟著移
+    function placeArrow(){
+      const el=tour&&tour.arrow&&document.querySelector(tour.arrow);
+      tourArrow.classList.toggle("show",!!el);
+      if(!el)return;
+      const r=el.getBoundingClientRect();
+      tourArrow.style.left=`${r.left+r.width/2-tourArrow.offsetWidth/2}px`;tourArrow.style.top=`${r.bottom+10}px`;
+    }
+    window.addEventListener("scroll",placeArrow,{passive:true});window.addEventListener("resize",placeArrow);
     let tour=null;
     function tourFocus(sel){
       document.querySelectorAll(".tour-focus").forEach(e=>e.classList.remove("tour-focus"));
@@ -2400,6 +2510,7 @@ HTML = r"""<!DOCTYPE html>
     async function tourShow(){
       const st=tour.steps[tour.i],last=tour.i===tour.steps.length-1;
       tourStepEl.textContent=`新手教學 ${tour.i+1} / ${tour.steps.length}`;
+      tour.arrow=null;placeArrow();
       tourTextEl.textContent=st.text;
       tourFocus(st.el);
       if(st.run){
@@ -2410,6 +2521,7 @@ HTML = r"""<!DOCTYPE html>
         if(st.after)tourFocus(st.after);
       }
       tourHintEl.textContent=last?"按任意鍵結束教學":"按任意鍵（或點這裡）下一步 · Esc 結束";
+      tour.arrow=st.arrow||null;placeArrow();
     }
     function tourNext(){
       if(!tour||tour.busy)return;
@@ -2418,6 +2530,7 @@ HTML = r"""<!DOCTYPE html>
     }
     function tourEnd(){
       tour=null;tourBar.classList.remove("show");tourFocus(null);document.body.classList.remove("touring");
+      tourSkip.classList.remove("show");tourArrow.classList.remove("show");
       document.removeEventListener("keydown",tourKey,true);
     }
     // capture 階段攔下按鍵：教學中按鍵只用來換步驟，不會打進輸入框或觸發其他快捷鍵
@@ -2425,10 +2538,13 @@ HTML = r"""<!DOCTYPE html>
       e.preventDefault();e.stopPropagation();
       if(e.key==="Escape")tourEnd();else tourNext();
     }
-    function tourStart(name){
+    function tourStart(name,firstRun=false){
       tourPick.classList.remove("show");
       if(!TOURS[name])return;
-      tour={steps:TOURS[name],i:0,busy:false};
+      tour={steps:TOURS[name],i:0,busy:false,firstRun};
+      tourSkip.classList.toggle("show",firstRun);
+      // 一開始播就記下來：只有這台電腦第一次執行會自動播，中途關掉程式再開也不會重播
+      if(firstRun)markTutorialDone();
       tourBar.classList.add("show");document.body.classList.add("touring");
       document.addEventListener("keydown",tourKey,true);
       tourShow();
@@ -2441,6 +2557,18 @@ HTML = r"""<!DOCTYPE html>
       closeDropdown();
       if(tour)tourEnd();
       tourPick.classList.add("show");
+    });
+    // 這台電腦第一次打開：自動播「全部功能」教學。桌面版記在電腦的使用者資料夾（伺服器回 true/false），
+    // 雲端版伺服器回 null，改記在這個瀏覽器
+    const LS_TOUR="cndict-tutorial-done";
+    function markTutorialDone(){
+      fetch("/first-run/done",{method:"POST"}).catch(()=>{});
+      try{localStorage.setItem(LS_TOUR,"1");}catch(_){}
+    }
+    tourSkip.addEventListener("click",e=>{
+      e.stopPropagation();
+      tourEnd();
+      showSkipOkay();
     });
 
     // 近義詞替換問「是否輸出詞表」按「不用」：全螢幕「喔好吧」動畫，按任意鍵（或點擊）關閉
@@ -2515,6 +2643,16 @@ HTML = r"""<!DOCTYPE html>
       setTimeout(()=>document.addEventListener("keydown",closeDog),0);
     });
     dogOverlay.addEventListener("click",closeDog);
+
+    // 第一次打開的教學按「一鍵跳過」：「好吧」GIF，按任意鍵（或點擊）關閉
+    const showSkipOkay=makeAnimOverlay(document.getElementById("skip-overlay"),document.getElementById("skip-img"),
+                                       ["/branding/skip-okay.gif"],600000);
+    (async()=>{
+      let first=null;
+      try{first=(await (await fetch("/first-run")).json()).first;}catch(_){}
+      if(first===null){try{first=!localStorage.getItem(LS_TOUR);}catch(_){first=false;}}
+      if(first)tourStart("all",true);
+    })();
   </script>
 </body>
 </html>"""
@@ -2556,8 +2694,11 @@ def search():
                     return lookup(w, session)
                 except Exception as e:
                     return [{"word": w, "pinyin": "錯誤", "pos": "—", "definition": str(e), "level": "—"}]
-            for entries in ex.map(safe_lookup, words):
+            for w, entries in zip(words, ex.map(safe_lookup, words)):
                 for entry in entries:
+                    # 查無整詞時會拆成單字查，entry["word"] 就變成單字；記下原本查的詞，
+                    # 網頁點斷詞結果只看某個詞時才找得到它拆出來的那幾列
+                    entry["query"] = w
                     yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
         yield 'data: {"done":true}\n\n'
     return Response(generate(), mimetype="text/event-stream",
@@ -2752,6 +2893,111 @@ def synonyms():
     word = (request.args.get("word") or "").strip()
     return {"word": word, "level": VOCAB_LEVEL.get(word, "—"), "synonyms": synonyms_of(word)}
 
+# ── 本機狀態：這台電腦看過新手教學沒、目前最新版本號、上次跑的 exe 在哪 ──
+# 存在使用者資料夾而不是瀏覽器 localStorage：每次啟動 port 可能不同（5000 被佔就換），
+# localStorage 跟著 port 走會被當成新網站，教學就會一直重播。
+_STATE_DIR = Path(os.environ.get("APPDATA") or Path.home()) / ("CNdict-tool" if os.name == "nt" else ".cndict-tool")
+_STATE_FILE = _STATE_DIR / "state.json"
+_state_lock = threading.Lock()
+
+def _load_state():
+    try:
+        return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _update_state(**kv):
+    with _state_lock:
+        state = _load_state()
+        state.update(kv)
+        try:
+            _STATE_DIR.mkdir(parents=True, exist_ok=True)
+            _STATE_FILE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+def _ver(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return (0,)
+
+# 打包後的 exe 檔名：GitHub Releases 上叫 CNdict-tool.exe，一鍵打包到桌面的叫 國文辭典查詢工具.exe；
+# 瀏覽器重複下載會變成「CNdict-tool (1).exe」，所以用開頭比對
+_EXE_PREFIXES = ("cndict-tool", "國文辭典查詢工具")
+
+def _is_tool_exe(name):
+    n = name.lower()
+    return n.endswith(".exe") and n.startswith(_EXE_PREFIXES)
+
+def _remove_old_versions():
+    """新版 exe 啟動時：關掉背景還在跑的舊版（使用者常常關了瀏覽器但 exe 還在背景），再把舊版 exe 刪掉。
+    只在 Windows 打包版執行；如果這台電腦已經跑過更新的版本（使用者誤開舊版），什麼都不動，免得舊版刪到新版。"""
+    if not (getattr(sys, "frozen", False) and os.name == "nt"):
+        return
+    state = _load_state()
+    if _ver(state.get("latest_version", "0")) > _ver(APP_VERSION):
+        return
+    me = Path(sys.executable).resolve()
+    no_window = 0x08000000  # CREATE_NO_WINDOW：--windowed 的 exe 叫 PowerShell 時不要閃黑視窗
+    # onefile exe 會有兩個行程（外層解壓的 bootloader + 裡面真正跑的 Python），兩個都是自己，不能殺
+    mine = {os.getpid(), os.getppid()}
+    old_paths = set()
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+             "Get-CimInstance Win32_Process | Select-Object ProcessId,Name,ExecutablePath | ConvertTo-Json -Compress"],
+            capture_output=True, timeout=30, creationflags=no_window).stdout.decode("utf-8", "ignore")
+        procs = json.loads(out or "[]")
+        for p in procs if isinstance(procs, list) else [procs]:
+            if p.get("ProcessId") in mine or not _is_tool_exe(p.get("Name") or ""):
+                continue
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p["ProcessId"])],
+                           capture_output=True, timeout=15, creationflags=no_window)
+            if p.get("ExecutablePath"):
+                old_paths.add(Path(p["ExecutablePath"]))
+    except Exception:
+        pass
+    # 背景沒在跑的舊版：上次記下的 exe 位置，加上下載／桌面／同資料夾裡比自己舊的同名 exe
+    if state.get("exe_path"):
+        old_paths.add(Path(state["exe_path"]))
+    my_mtime = me.stat().st_mtime
+    home = Path(os.environ.get("USERPROFILE") or Path.home())
+    for folder in {home / "Downloads", home / "Desktop", me.parent}:
+        try:
+            for f in folder.iterdir():
+                if _is_tool_exe(f.name) and f.is_file() and f.stat().st_mtime < my_mtime:
+                    old_paths.add(f)
+        except OSError:
+            pass
+    for f in old_paths:
+        try:
+            if f.resolve() == me or not _is_tool_exe(f.name):
+                continue
+        except OSError:
+            continue
+        for _ in range(10):  # 剛被 taskkill 的行程要一下子才會放開檔案
+            try:
+                f.unlink(missing_ok=True)
+                break
+            except OSError:
+                time.sleep(0.5)
+    _update_state(latest_version=APP_VERSION, exe_path=str(me))
+
+@app.route("/first-run")
+def first_run():
+    # 雲端模式大家共用同一台伺服器，改由瀏覽器自己記（回 null）
+    if os.environ.get("PORT"):
+        return {"first": None}
+    return {"first": not _load_state().get("tutorial_done", False)}
+
+@app.route("/first-run/done", methods=["POST"])
+def first_run_done():
+    if not os.environ.get("PORT"):
+        _update_state(tutorial_done=True)
+    return {"ok": True}
+
 if __name__ == "__main__":
     # 雲端平台（如 Zeabur）會注入 PORT 環境變數；本機/打包的 .exe 沒有這個變數，
     # 維持原本「跑在 127.0.0.1 並自動開瀏覽器」的桌面體驗。
@@ -2771,5 +3017,6 @@ if __name__ == "__main__":
                 port = probe.getsockname()[1]
         url = f"http://127.0.0.1:{port}"
         print(f"啟動中… {url}")
+        threading.Thread(target=_remove_old_versions, daemon=True).start()
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         app.run(debug=False, host="127.0.0.1", port=port, threaded=True)
