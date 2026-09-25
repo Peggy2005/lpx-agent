@@ -43,7 +43,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ── 設定 ─────────────────────────────────────────────────────────────
 PORT = 5000
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 BASE = "https://dict.concised.moe.edu.tw"
 MOEDICT_URL = "https://www.moedict.tw/a/{word}.json"
@@ -2929,7 +2929,7 @@ def _is_tool_exe(name):
     n = name.lower()
     return n.endswith(".exe") and (n.startswith("cndict-tool") or "辭典查詢" in n)
 
-_DUP_SUFFIX = re.compile(r"\s*\(\d+\)$")  # 「國語辭典查詢工具(1)」「CNdict-tool (2)」
+_DUP_SUFFIX = re.compile(r"\s*[(（]\d+[)）]$")  # 重複下載幾次都行：「(1)」「 (2)」「(15)」，全形「（3）」也算
 
 def _cleanup_log(msg):
     try:
