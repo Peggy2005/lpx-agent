@@ -1,0 +1,39 @@
+name: Test dict-tool old-version cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: "build-dict-exe run id whose exe to test"
+        required: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Reproduce - many repeat downloads, one old copy running
+        shell: pwsh
+        run: |
+          $dl = "$env:USERPROFILE\Downloads"; New-Item -ItemType Directory -Force $dl | Out-Null
+          gh release download v1.0.1 -R Peggy2005/CNdict-tool -p CNdict-tool.exe -D v101
+          gh release download v1.1.0 -R Peggy2005/CNdict-tool -p CNdict-tool.exe -D v110
+          gh run download ${{ inputs.build_run }} -R ${{ github.repository }} -n "國文辭典查詢工具-exe" -D new
+          $n = "國文辭典查詢工具"
+          Copy-Item v101\CNdict-tool.exe "$dl\$n.exe"
+          Copy-Item v110\CNdict-tool.exe "$dl\$n(1).exe"
+          Copy-Item v101\CNdict-tool.exe "$dl\$n (2).exe"
+          Copy-Item "new\$n.exe" "$dl\$n(15).exe"
+          $i = 4; foreach ($f in "$n.exe", "$n(1).exe", "$n (2).exe") { (Get-Item "$dl\$f").LastWriteTime = (Get-Date).AddHours(-$i); $i-- }
+          (Get-Item "$dl\$n(15).exe").LastWriteTime = Get-Date
+          "== Downloads before =="; Get-ChildItem $dl -Filter *.exe | Select-Object Name,LastWriteTime | Out-String
+          Start-Process "$dl\$n.exe"; Start-Sleep 15
+          "== running before =="; Get-Process | Where-Object { $_.Path -like "*辭典查詢*" } | Format-Table Id,Path -AutoSize | Out-String -Width 300
+          Start-Process "$dl\$n(15).exe"; Start-Sleep 40
+          "== running after =="; Get-Process | Where-Object { $_.Path -like "*辭典查詢*" } | Format-Table Id,Path -AutoSize | Out-String -Width 300
+          "== Downloads after =="; Get-ChildItem $dl -Filter *.exe | Select-Object Name | Out-String
+          "== cleanup.log =="; Get-Content "$env:APPDATA\CNdict-tool\cleanup.log" -Encoding utf8 -ErrorAction Continue
