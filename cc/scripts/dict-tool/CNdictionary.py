@@ -2922,23 +2922,36 @@ def _ver(v):
     except ValueError:
         return (0,)
 
-# 打包後的 exe 檔名：GitHub Releases 上叫 CNdict-tool.exe，一鍵打包到桌面的叫 國文辭典查詢工具.exe；
-# 瀏覽器重複下載會變成「CNdict-tool (1).exe」，所以用開頭比對
-_EXE_PREFIXES = ("cndict-tool", "國文辭典查詢工具")
-
+# 打包後的 exe 檔名：GitHub Releases 上叫 CNdict-tool.exe，一鍵打包到桌面的叫 國文辭典查詢工具.exe，
+# 使用者也可能自己改成「國語辭典查詢工具.exe」之類；瀏覽器重複下載會再加上「(1)」「 (2)」。
+# 所以認 CNdict-tool 開頭，或檔名裡有「辭典查詢」的 exe。
 def _is_tool_exe(name):
     n = name.lower()
-    return n.endswith(".exe") and n.startswith(_EXE_PREFIXES)
+    return n.endswith(".exe") and (n.startswith("cndict-tool") or "辭典查詢" in n)
+
+_DUP_SUFFIX = re.compile(r"\s*\(\d+\)$")  # 「國語辭典查詢工具(1)」「CNdict-tool (2)」
+
+def _cleanup_log(msg):
+    try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_STATE_DIR / "cleanup.log", "a", encoding="utf-8") as fp:
+            fp.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} v{APP_VERSION} {msg}\n")
+    except OSError:
+        pass
 
 def _remove_old_versions():
-    """新版 exe 啟動時：關掉背景還在跑的舊版（使用者常常關了瀏覽器但 exe 還在背景），再把舊版 exe 刪掉。
-    只在 Windows 打包版執行；如果這台電腦已經跑過更新的版本（使用者誤開舊版），什麼都不動，免得舊版刪到新版。"""
+    """新版 exe 啟動時：關掉背景還在跑的舊版（使用者常常關了瀏覽器但 exe 還在背景），再把舊版 exe 刪掉，
+    最後把自己的「(1)」去掉改回原檔名。下載當下什麼都做不了，一定要打開新版才會清。
+    只在 Windows 打包版執行；如果這台電腦已經跑過更新的版本（使用者誤開舊版），什麼都不動，免得舊版刪到新版。
+    每一步都寫進 %APPDATA%\\CNdict-tool\\cleanup.log，沒清乾淨時可以看原因。"""
     if not (getattr(sys, "frozen", False) and os.name == "nt"):
         return
     state = _load_state()
     if _ver(state.get("latest_version", "0")) > _ver(APP_VERSION):
+        _cleanup_log(f"略過：這台電腦跑過更新的 v{state.get('latest_version')}")
         return
     me = Path(sys.executable).resolve()
+    _cleanup_log(f"啟動 {me}")
     no_window = 0x08000000  # CREATE_NO_WINDOW：--windowed 的 exe 叫 PowerShell 時不要閃黑視窗
     # onefile exe 會有兩個行程（外層解壓的 bootloader + 裡面真正跑的 Python），兩個都是自己，不能殺
     mine = {os.getpid(), os.getppid()}
@@ -2953,18 +2966,22 @@ def _remove_old_versions():
         for p in procs if isinstance(procs, list) else [procs]:
             if p.get("ProcessId") in mine or not _is_tool_exe(p.get("Name") or ""):
                 continue
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p["ProcessId"])],
-                           capture_output=True, timeout=15, creationflags=no_window)
+            r = subprocess.run(["taskkill", "/F", "/T", "/PID", str(p["ProcessId"])],
+                               capture_output=True, timeout=15, creationflags=no_window)
+            _cleanup_log(f"關閉背景舊版 PID {p['ProcessId']} {p.get('ExecutablePath')}（taskkill={r.returncode}）")
             if p.get("ExecutablePath"):
                 old_paths.add(Path(p["ExecutablePath"]))
-    except Exception:
-        pass
-    # 背景沒在跑的舊版：上次記下的 exe 位置，加上下載／桌面／同資料夾裡比自己舊的同名 exe
+    except Exception as e:
+        _cleanup_log(f"列出行程失敗：{e}")
+    # 背景沒在跑的舊版：上次記下的 exe 位置，加上下載／桌面（含 OneDrive 桌面）／同資料夾裡比自己舊的同類 exe
     if state.get("exe_path"):
         old_paths.add(Path(state["exe_path"]))
     my_mtime = me.stat().st_mtime
     home = Path(os.environ.get("USERPROFILE") or Path.home())
-    for folder in {home / "Downloads", home / "Desktop", me.parent}:
+    folders = {home / "Downloads", home / "Desktop", me.parent}
+    if os.environ.get("OneDrive"):
+        folders.add(Path(os.environ["OneDrive"]) / "Desktop")
+    for folder in folders:
         try:
             for f in folder.iterdir():
                 if _is_tool_exe(f.name) and f.is_file() and f.stat().st_mtime < my_mtime:
@@ -2973,16 +2990,29 @@ def _remove_old_versions():
             pass
     for f in old_paths:
         try:
-            if f.resolve() == me or not _is_tool_exe(f.name):
+            if f.resolve() == me or not _is_tool_exe(f.name) or not f.exists():
                 continue
         except OSError:
             continue
         for _ in range(10):  # 剛被 taskkill 的行程要一下子才會放開檔案
             try:
-                f.unlink(missing_ok=True)
+                f.unlink()
+                _cleanup_log(f"刪除舊版 {f}")
                 break
-            except OSError:
+            except OSError as e:
+                err = e
                 time.sleep(0.5)
+        else:
+            _cleanup_log(f"刪不掉 {f}：{err}")
+    # 舊版刪掉後，原本的檔名空出來了：把自己的「(1)」拿掉（Windows 允許改名執行中的 exe，只是不能刪）
+    clean = me.with_name(_DUP_SUFFIX.sub("", me.stem) + me.suffix)
+    if clean != me and not clean.exists():
+        try:
+            me.rename(clean)
+            _cleanup_log(f"改名 {me.name} → {clean.name}")
+            me = clean
+        except OSError as e:
+            _cleanup_log(f"改名失敗 {me.name}：{e}")
     _update_state(latest_version=APP_VERSION, exe_path=str(me))
 
 @app.route("/first-run")

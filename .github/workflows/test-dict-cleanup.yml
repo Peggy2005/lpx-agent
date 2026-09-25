@@ -1,0 +1,36 @@
+name: Test dict-tool old-version cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: "build-dict-exe run id whose exe to test"
+        required: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Reproduce - old running in background, new downloaded as (1)
+        shell: pwsh
+        run: |
+          $dl = "$env:USERPROFILE\Downloads"; New-Item -ItemType Directory -Force $dl | Out-Null
+          gh release download v1.0.1 -R Peggy2005/CNdict-tool -p CNdict-tool.exe -D old
+          gh run download ${{ inputs.build_run }} -R ${{ github.repository }} -n "國文辭典查詢工具-exe" -D new
+          $old = "$dl\國語辭典查詢工具.exe"; $new = "$dl\國語辭典查詢工具(1).exe"
+          Copy-Item old\CNdict-tool.exe $old
+          Copy-Item "new\國文辭典查詢工具.exe" $new
+          (Get-Item $old).LastWriteTime = (Get-Date).AddHours(-1)
+          (Get-Item $new).LastWriteTime = Get-Date
+          Start-Process $old; Start-Sleep 15
+          "== before =="; Get-Process | Where-Object { $_.Path -like "*辭典查詢*" } | Format-Table Id,Path -AutoSize | Out-String -Width 300
+          Start-Process $new; Start-Sleep 40
+          "== after =="; Get-Process | Where-Object { $_.Path -like "*辭典查詢*" } | Format-Table Id,Path -AutoSize | Out-String -Width 300
+          "== Downloads =="; Get-ChildItem $dl -Filter *.exe | Select-Object Name | Out-String
+          "== cleanup.log =="; Get-Content "$env:APPDATA\CNdict-tool\cleanup.log" -Encoding utf8 -ErrorAction Continue
+          "== state.json =="; Get-Content "$env:APPDATA\CNdict-tool\state.json" -Encoding utf8 -ErrorAction Continue
