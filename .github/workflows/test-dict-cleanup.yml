@@ -22,7 +22,7 @@ jobs:
           $dl = "$env:USERPROFILE\Downloads"; New-Item -ItemType Directory -Force $dl | Out-Null
           gh release download v1.0.1 -R Peggy2005/CNdict-tool -p CNdict-tool.exe -D old
           gh run download ${{ inputs.build_run }} -R ${{ github.repository }} -n "國文辭典查詢工具-exe" -D new
-          $old = "$dl\國語辭典查詢工具.exe"; $new = "$dl\國語辭典查詢工具(1).exe"
+          $old = "$dl\國文辭典查詢工具.exe"; $new = "$dl\國文辭典查詢工具(1).exe"
           Copy-Item old\CNdict-tool.exe $old
           Copy-Item "new\國文辭典查詢工具.exe" $new
           (Get-Item $old).LastWriteTime = (Get-Date).AddHours(-1)
