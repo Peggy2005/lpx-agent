@@ -7,3 +7,4 @@ __pycache__/
 scripts/dict-tool/build/
 scripts/dict-tool/dist/
 scripts/dict-tool/*.spec
+.DS_Store
